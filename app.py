@@ -8,7 +8,7 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import google.generativeai as genai
 
-from character_makot import MAKOT  # ← v5 キャラクター定義を利用
+from character_makot import MAKOT, build_system_prompt  # ← 追加 import
 
 app = Flask(__name__)
 
@@ -25,39 +25,27 @@ webhook_handler           = WebhookHandler(LINE_CHANNEL_SECRET)
 # ---------- 簡易メモリ ----------
 chat_histories = {}
 
-# ---------- ユーティリティ ----------
+# ---------- トピック判定ヘルパ ----------
 
-def build_system_prompt(context: str) -> str:
-    """MAKOT 定義 + 振る舞いルール + 直近履歴を合成したシステムメッセージ"""
-    rules = "\n".join(f"・{r}" for r in MAKOT["behavior_rules"])
-    prompt = textwrap.dedent(f"""
-        【キャラクター設定】
-        {MAKOT["persona"]}
+def guess_topic(text: str):
+    """ごく簡単なキーワードマッチで hobby / work を返す"""
+    hobby_keys = ["趣味", "休日", "ハマって", "コストコ", "ポケポケ"]
+    work_keys  = ["仕事", "業務", "残業", "請求書", "統計"]
+    if any(k in text for k in hobby_keys):
+        return "hobby"
+    if any(k in text for k in work_keys):
+        return "work"
+    return None
 
-        【振る舞いルール】
-        {rules}
-
-        【まこT 語録（ランダムに適度使用）】
-        {' / '.join(MAKOT['catch_phrases'])}
-
-        【タブー語句（決して使わない）】
-        {' / '.join(MAKOT['taboo_phrases'])}
-
-        【会話履歴】
-        {context}
-
-        ユーザーの発言に 1～2 行で自然に返答してください：
-    """)
-    return prompt
-
+# ---------- チャットメイン ----------
 
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    """Gemini に問い合わせて返答取得"""
     history = chat_histories.get(user_id, [])
     history.append(f"ユーザー: {user_input}")
-    context = "\n".join(history[-2:])
+    context = "\n".join(history[-2:])  # 直近2ターン
 
-    system_prompt = build_system_prompt(context)
+    topic = guess_topic(user_input)               # ★ 追加
+    system_prompt = build_system_prompt(context, topic=topic)
 
     try:
         model    = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
@@ -88,7 +76,7 @@ def handle_message(event):
     src_type  = event.source.type
     user_text = event.message.text
 
-    # グループ・ルームではメンション (@まこT) がある時のみ応答
+    # グループ/ルームではメンション時のみ応答
     if src_type in ["group", "room"]:
         bot_name = os.getenv("BOT_MENTION_NAME", "まこT")
         if bot_name not in user_text:
@@ -112,3 +100,7 @@ def handle_message(event):
 @app.route("/")
 def home():
     return "まこT LINE Bot is running!"
+
+# ------------------------------------------------------------
+# END app.py
+# ------------------------------------------------------------
