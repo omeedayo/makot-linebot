@@ -85,12 +85,13 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
 
-    reply = post_process(reply, user_input)  # ★ Level‑3 後処理
-
+   reply = post_process(reply, user_input)
+    # pronoun injection
+    pronoun = decide_pronoun(user_input)
+    reply   = inject_pronoun(reply, pronoun)
     history.append(reply)
     chat_histories[user_id] = history
     return reply
-
 # ---------- Flask エンドポイント ----------
 
 @app.route("/line_webhook", methods=["POST"])
@@ -104,16 +105,15 @@ def line_webhook():
     return "OK", 200
 
 
+# ★デコレータを戻す
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     src_type  = event.source.type
     user_text = event.message.text
 
-    # グループ/ルームではメンション時のみ応答
-    if src_type in ["group", "room"]:
-        bot_name = os.getenv("BOT_MENTION_NAME", "まこT")
-        if bot_name not in user_text:
-            return
+    # グループ / ルームでは “まこT” またはニックネームが入っていなければ無視
+    if src_type in ["group", "room"] and not is_bot_mentioned(user_text):
+        return
 
     # ID 決定
     src_id = (
@@ -128,8 +128,7 @@ def handle_message(event):
         event.reply_token,
         TextSendMessage(text=reply_text)
     )
-
-
+    
 @app.route("/")
 def home():
     return "まこT LINE Bot is running!"
