@@ -88,7 +88,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     system_prompt = build_system_prompt(context)
 
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel("gemini-1.5-pro-latest")
         messages = [
             {"role": "system", "parts": [{"text": system_prompt}]},
             {"role": "user",   "parts": [{"text": user_input}]}
