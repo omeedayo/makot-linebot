@@ -60,7 +60,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     system_prompt = build_system_prompt(context)
 
     try:
-        model    = genai.GenerativeModel("gemini-1.5-pro")
+        model    = genai.GenerativeModel("gemini-2.0-flash")
         response = model.generate_content(system_prompt)
         reply    = response.text.strip()
     except Exception as e:
