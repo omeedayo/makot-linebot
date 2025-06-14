@@ -1,17 +1,15 @@
 import os
 import random
-import textwrap
-
+import re
 from flask import Flask, request
 from linebot import LineBotApi, WebhookHandler
 from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import google.generativeai as genai
 
-from character_makot import MAKOT, build_system_prompt, apply_expression_style  # ← 追加 import
+from character_makot import MAKOT, build_system_prompt, apply_expression_style
 
 app = Flask(__name__)
-
 # ---------- Gemini API ----------
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
