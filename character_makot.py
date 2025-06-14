@@ -122,13 +122,26 @@ def apply_expression_style(text: str, mood: str = "normal") -> str:
             text += " " + rules["laugh_pattern"] * random.randint(2, 4)
     return text
 
+
+# ---------------------------------------------------------------------------
+# Few‑shot サンプルを組み立て
+# ---------------------------------------------------------------------------
+
+def sample_examples(k: int = 3) -> str:
+    """example_conversation からランダム抽出して交互形式で返す"""
+    ex = random.sample(MAKOT["example_conversation"], k=k)
+    return "\n".join(
+        f"ユーザー: {e['user']}\nアシスタント: {e['assistant']}" for e in ex
+    )
+
+
 # ---------------------------------------------------------------------------
 # prompt builder (topic‑aware)
 # ---------------------------------------------------------------------------
 
 def build_system_prompt(context: str, topic: Optional[str] = None) -> str:
-    """キャラ設定 + 行動ルール + 必要に応じて追加セクションを合成"""
     parts = [
+        ("【参考対話】", sample_examples()),
         ("【キャラクター設定】", MAKOT["persona"]),
         ("【振る舞いルール】", "\n".join(f"・{r}" for r in MAKOT["behavior_rules"])),
         ("【まこT 語録】", " / ".join(random.sample(MAKOT["catch_phrases"], k=4))),
