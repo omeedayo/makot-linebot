@@ -25,6 +25,13 @@ webhook_handler           = WebhookHandler(LINE_CHANNEL_SECRET)
 # ---------- 簡易メモリ ----------
 chat_histories: dict[str, list[str]] = {}
 
+# ---------- ニックネーム & メンション判定 ----------
+NICKNAMES = [MAKOT["name"]] + MAKOT["nicknames"]
+
+def is_bot_mentioned(text: str) -> bool:
+    return any(nick in text for nick in NICKNAMES)
+
+
 # ---------- トピック判定ヘルパ ----------
 
 def guess_topic(text: str):
@@ -37,18 +44,28 @@ def guess_topic(text: str):
         return "work"
     return None
 
-# ---------- 後処理（Level‑3） ----------
+# ---------- pronoun ロジック ----------
+
+def decide_pronoun(user_text: str) -> str:
+    high_hit = any(k in user_text for k in MAKOT["emotion_triggers"]["high"])
+    if not high_hit:
+        return "私"  # normal
+    return "マコ" if random.random() < 0.10 else "おに"
+
+def inject_pronoun(reply: str, pronoun: str) -> str:
+    return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
+
+# ---------- 後処理 ----------
 
 def post_process(reply: str, user_input: str) -> str:
     high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"])
     low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
-
     if high:
         reply = apply_expression_style(reply, mood="high")
     elif low:
         reply += " 🥺"
+    # surprise / face_emojis は apply_expression_style 内で 10-15% で付与
     return reply
-
 
 # ---------- チャットメイン ----------
 
