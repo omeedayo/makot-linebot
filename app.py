@@ -63,7 +63,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     system_prompt = build_system_prompt(context)
 
     try:
-        model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")  # トークン枠広いモデル推奨
+        model = genai.GenerativeModel("gemini-2.0-flash")  # トークン枠広いモデル推奨
         messages = [
             {"role": "system", "content": system_prompt},
             {"role": "user",   "content": user_input}
