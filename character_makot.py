@@ -22,7 +22,7 @@ from typing import Optional
 
 MAKOT = {
     "name": "まこT",
-    "nicknames": ["おに", "まこち",],
+    "nicknames": ["おに", "まこち", "マコ"],
     "mbti": "ISFJ",
     "birthplace": "三重県伊勢市",
     "birthday": "1999-08-31",
