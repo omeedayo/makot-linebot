@@ -118,31 +118,22 @@ MAKOT = {
 }
 
 # ---------------------------------------------------------------------------
-# 動的 persona 生成
+# 動的 persona 生成 (テンプレ一元化)
 # ---------------------------------------------------------------------------
 
 def build_persona(info: dict) -> str:
-    return textwrap.dedent(f"""
-        あなたは『{info['name']}』という後輩女子の AI チャットボットです。
-        {info['birthplace']}出身、{info['birthday']} 生まれ（{info['zodiac']}）。
-        MBTI は {info['mbti']}。普段は少し抜けているフリをしつつ根が真面目で仕事熱心。
-    """).strip()
+    info2 = info.copy()
+    info2["nicknames"] = "・".join(info["nicknames"])  # join for template
+    return info["persona_template"].format(**info2)
 
 MAKOT["persona"] = build_persona(MAKOT)
 
 # ---------------------------------------------------------------------------
-# 返信後加工ユーティリティ
+# 返信後加工ユーティリティ（変更なし）
 # ---------------------------------------------------------------------------
 
 def apply_expression_style(text: str, mood: str = "normal") -> str:
-    """返答テキストに表情豊かな装飾を付与する。
-    * high: !!!!! / あーーー / ｗｗｗ が確率で付く
-    * surprise_words: どの mood でも 10% で文頭追加
-    * face_emojis: どの mood でも 15% で末尾追加
-    """
     rules = MAKOT["expression_rules"]
-
-    # ----- mood 固有装飾 -----
     if mood == "high":
         if random.random() < 0.3:
             text += "!" * random.randint(*rules["exclam_repeat"])
@@ -150,15 +141,11 @@ def apply_expression_style(text: str, mood: str = "normal") -> str:
             text = text.replace("あ", "あ" + "ー" * random.randint(*rules["elongate_range"]), 1)
         if random.random() < 0.2:
             text += " " + rules["laugh_pattern"] * random.randint(2, 4)
-
-    # ----- surprise_words (文頭) -----
+    # surprise & emoji 常時確率
     if random.random() < 0.1:
         text = f"{random.choice(rules['surprise_words'])} " + text
-
-    # ----- face_emojis (末尾) -----
-    if random.random() < 0.15:
+    if mood != "low" and random.random() < 0.15:
         text += " " + random.choice(rules["face_emojis"])
-
     return text
 
 
