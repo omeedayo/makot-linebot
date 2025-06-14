@@ -94,7 +94,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             {"role": "user",   "content": user_input}
         ]
         response = model.generate_content(
-            messages=messages,
+            messages,
             generation_config={"temperature": 0.7, "max_output_tokens": 512}
         )
         reply = response.text.strip()
