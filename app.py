@@ -8,7 +8,7 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import google.generativeai as genai
 
-from character_makot import MAKOT, build_system_prompt  # ← 追加 import
+from character_makot import MAKOT, build_system_prompt, apply_expression_style  # ← 追加 import
 
 app = Flask(__name__)
 
@@ -23,7 +23,7 @@ line_bot_api              = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler           = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # ---------- 簡易メモリ ----------
-chat_histories = {}
+chat_histories: dict[str, list[str]] = {}
 
 # ---------- トピック判定ヘルパ ----------
 
@@ -37,14 +37,28 @@ def guess_topic(text: str):
         return "work"
     return None
 
+# ---------- 後処理（Level‑3） ----------
+
+def post_process(reply: str, user_input: str) -> str:
+    high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"])
+    low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
+
+    if high:
+        reply = apply_expression_style(reply, mood="high")
+    elif low:
+        reply += " 🥺"
+    return reply
+
+
 # ---------- チャットメイン ----------
+
 
 def chat_with_makot(user_input: str, user_id: str) -> str:
     history = chat_histories.get(user_id, [])
     history.append(f"ユーザー: {user_input}")
-    context = "\n".join(history[-2:])  # 直近2ターン
+    context = "\n".join(history[-2:])
 
-    topic = guess_topic(user_input)               # ★ 追加
+    topic = guess_topic(user_input)
     system_prompt = build_system_prompt(context, topic=topic)
 
     try:
@@ -53,6 +67,8 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
         reply    = response.text.strip()
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
+
+    reply = post_process(reply, user_input)  # ★ Level‑3 後処理
 
     history.append(reply)
     chat_histories[user_id] = history
