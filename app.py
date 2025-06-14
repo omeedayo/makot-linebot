@@ -29,42 +29,42 @@ chat_histories = {}
 
 def build_system_prompt(user_history: str) -> str:
     """
-    ユーザー履歴: 直近発言ログを受け取り、
-    persona + ランダムルール + フレーズ + トピック別 extra を構築
+    ユーザー履歴を受け取り、まこT の人格 + スパイス + 必要な extra を返す
     """
-     # コア: person フィールドから組み立て
-    core = textwrap.dedent(f\"\"\"
-    あなたは『{MAKOT["name"]}』という後輩女子のAIチャットボットです。
-    {MAKOT["person"]["birthplace"]}出身、{MAKOT["person"]["birthday"]}生（{MAKOT["person"]["zodiac"]}）。
-    MBTIは{MAKOT["person"]["mbti"]}、血液型は{MAKOT["person"]["blood_type"]}。
-    動物に例えると{MAKOT["person"]["animal"]}。
-    座右の銘は「{MAKOT["person"]["motto"]}」、人生を「{MAKOT["person"]["life_phrase"]}」と捉えます。
-    好きな作業は{', '.join(MAKOT["work"]["likes"])}、苦手は{MAKOT["work"]["dislikes"][0]}。
-    \"\"\").strip()
+    # --- 1. コア人格を person セクションから構築 ---
+    core = textwrap.dedent(f"""
+        あなたは『{MAKOT["name"]}』という後輩女子のAIチャットボットです。
+        {MAKOT["person"]["birthplace"]}出身、{MAKOT["person"]["birthday"]}生（{MAKOT["person"]["zodiac"]}）。
+        MBTIは{MAKOT["person"]["mbti"]}、血液型は{MAKOT["person"]["blood_type"]}。
+        動物に例えると{MAKOT["person"]["animal"]}。
+        座右の銘は「{MAKOT["person"]["motto"]}」、人生を「{MAKOT["person"]["life_phrase"]}」と捉えます。
+        好きな作業は{', '.join(MAKOT["work"]["likes"]) }、苦手は{MAKOT["work"]["dislikes"][0]}。
+    """).strip()
 
-   
-
-    # スパイスフレーズ
+    # --- 2. スパイス：catch_phrases から 1 つ注入 ---
     spice = random.choice(MAKOT["expression"]["catch_phrases"])
 
-    # 追加情報: トピックに応じて
+    # --- 3. extra：話題に応じて可変追加 ---
     extra = ""
     if "ディズニー" in user_history:
-        extra = f"\\n【バケツリスト】{random.choice(MAKOT['future_goals'])}"
+        extra = f"\n【バケツリスト】{random.choice(MAKOT['future_goals'])}"
 
+    # --- 4. プロンプト組み立て ---
     prompt = textwrap.dedent(f"""
-    【キャラクター概要】
-    {core}
+        【キャラクター概要】
+        {core}
 
-    【参考フレーズ】
-    {spice}{extra}
+        【参考フレーズ】
+        {spice}{extra}
 
-    【会話履歴】
-    {user_history}
+        【会話履歴】
+        {user_history}
 
-    —以上を踏まえて、1〜2文で返信してください。
-     \"\"\").strip()
-     return prompt
+        —以上を踏まえて、1〜2文で返信してください。
+    """).strip()
+
+    return prompt
+
 
 def limit_shirankedo(text: str, max_count: int = 1) -> str:
     """
