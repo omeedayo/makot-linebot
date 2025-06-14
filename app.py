@@ -83,7 +83,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
 
-   reply = post_process(reply, user_input)
+    reply = post_process(reply, user_input)
     # pronoun injection
     pronoun = decide_pronoun(user_input)
     reply   = inject_pronoun(reply, pronoun)
