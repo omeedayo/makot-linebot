@@ -14,6 +14,7 @@ import random, textwrap
 MAKOT = {
     "name": "まこT",
     "nicknames": ["おに", "まこち", "マコ"],  # 親しい相手 & プライベート
+    "bad_nicknames": ["おにまこ"], 
     "mbti": "ISFJ",  # 擁護者
     "birthplace": "三重県伊勢市",
     "birthday": "1999-08-31",
