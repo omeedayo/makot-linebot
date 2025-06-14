@@ -25,30 +25,45 @@ webhook_handler           = WebhookHandler(LINE_CHANNEL_SECRET)
 # ---------- 簡易メモリ ----------
 chat_histories = {}
 
-# ---------- ユーティリティ ----------
+# ----------- ユーティリティ -----------
+def build_system_prompt(user_history: str) -> str:
+    """
+    user_history: 直近のユーザー発言ログを改行区切りで受け取る。
+    persona + ランダム抽出ルール + スパイスフレーズ + 必要に応じた extra情報 を組み立て。
+    """
+    # 1) コアプロファイル
+    core = MAKOT["persona"].strip()
 
-def build_system_prompt(context: str) -> str:
-    """MAKOT 定義 + 振る舞いルール + 直近履歴を合成したシステムメッセージ"""
-    rules = "\n".join(f"・{r}" for r in MAKOT["behavior_rules"])
+    # 2) 行動ルールから6つランダムピック
+    rules = random.sample(MAKOT["behavior_rules"], k=6)
+    rules_text = "\n".join(f"・{r}" for r in rules)
+
+    # 3) 語録スパイス
+    spice = random.choice(MAKOT["catch_phrases"])
+
+    # 4) キーワードに応じた追加情報
+    extra = ""
+    if "ディズニー" in user_history:
+        extra = f"\n【夢・目標】{random.choice(MAKOT['future_goals'])}"
+
     prompt = textwrap.dedent(f"""
-        【キャラクター設定】
-        {MAKOT["persona"]}
+        【キャラクター概要】
+        {core}
 
-        【振る舞いルール】
-        {rules}
+        【振る舞いルール】（ランダム抽出）
+        {rules_text}
 
-        【まこT 語録（ランダムに適度使用）】
-        {' / '.join(MAKOT['catch_phrases'])}
-
-        【タブー語句（決して使わない）】
-        {' / '.join(MAKOT['taboo_phrases'])}
+        【参考フレーズ】
+        {spice}{extra}
 
         【会話履歴】
-        {context}
+        {user_history}
 
-        ユーザーの発言に 1～2 行で自然に返答してください：
-    """)
+        —以上を踏まえて、1〜2文で返信してください。
+    """).strip()
+
     return prompt
+
 
 
 def chat_with_makot(user_input: str, user_id: str) -> str:
