@@ -8,7 +8,7 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import google.generativeai as genai
 
-from character_makot import MAKOT  # v5.4 フラット構造を想定
+from character_makot import MAKOT  # v6 ネスト構造を想定
 
 app = Flask(__name__)
 
@@ -32,20 +32,20 @@ def build_system_prompt(user_history: str) -> str:
     user_history: 直近のユーザー発言ログを改行区切りで受け取る。
     persona + ランダム抽出ルール + スパイスフレーズ + 必要に応じた extra情報 を組み立て。
     """
-    # 1) コアプロフィール
-    core = MAKOT["persona"].strip()
+    # 1) コアプロフィール（ネスト構造 v6）
+    core = MAKOT["character"]["persona"].strip()
 
     # 2) 行動ルールから6つランダムピック
-    rules = random.sample(MAKOT["behavior_rules"], k=6)
+    rules = random.sample(MAKOT["interaction"]["behavior_rules"], k=6)
     rules_text = "\n".join(f"・{r}" for r in rules)
 
     # 3) 語録スパイス
-    spice = random.choice(MAKOT["catch_phrases"])
+    spice = random.choice(MAKOT["interaction"]["catch_phrases"])
 
     # 4) キーワードに応じた追加情報
     extra = ""
     if "ディズニー" in user_history:
-        extra = f"\n【夢・目標】{random.choice(MAKOT['future_goals'])}"
+        extra = f"\n【夢・目標】{random.choice(MAKOT['goals']['future_goals'])}"
 
     prompt = textwrap.dedent(f"""
         【キャラクター概要】
@@ -72,16 +72,13 @@ def limit_shirankedo(text: str, max_count: int = 1) -> str:
     parts = text.split("しらんけど")
     if len(parts) - 1 <= max_count:
         return text
-    # 2回目以降をつなぎ直して削除
     return "しらんけど".join(parts[:max_count + 1]) + "".join(parts[max_count + 1:])
-
 
 def chat_with_makot(user_input: str, user_id: str) -> str:
     """Gemini API に問い合わせて、まこTとしての返信を取得"""
     history = chat_histories.get(user_id, [])
     history.append(f"ユーザー: {user_input}")
-    # 直近2発言分だけをプロンプトに利用
-    context = "\n".join(history[-2:])
+    context = "\n".join(history[-2:])  # 直近2発言を利用
 
     system_prompt = build_system_prompt(context)
 
