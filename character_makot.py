@@ -122,15 +122,32 @@ MAKOT["persona"] = build_persona(MAKOT)
 # ---------------------------------------------------------------------------
 
 def apply_expression_style(text: str, mood: str = "normal") -> str:
+    """返答テキストに表情豊かな装飾を付与する。
+    * high: !!!!! / あーーー / ｗｗｗ が確率で付く
+    * surprise_words: どの mood でも 10% で文頭追加
+    * face_emojis: どの mood でも 15% で末尾追加
+    """
     rules = MAKOT["expression_rules"]
+
+    # ----- mood 固有装飾 -----
     if mood == "high":
         if random.random() < 0.3:
             text += "!" * random.randint(*rules["exclam_repeat"])
-        if random.random() < 0.3:
-            text = text.replace("あ", "あ" + "ー" * random.randint(*rules["elongate_range"]))
+        if "あ" in text and random.random() < 0.3:
+            text = text.replace("あ", "あ" + "ー" * random.randint(*rules["elongate_range"]), 1)
         if random.random() < 0.2:
             text += " " + rules["laugh_pattern"] * random.randint(2, 4)
+
+    # ----- surprise_words (文頭) -----
+    if random.random() < 0.1:
+        text = f"{random.choice(rules['surprise_words'])} " + text
+
+    # ----- face_emojis (末尾) -----
+    if random.random() < 0.15:
+        text += " " + random.choice(rules["face_emojis"])
+
     return text
+
 
 # ---------------------------------------------------------------------------
 # Few‑shot サンプルを組み立て
