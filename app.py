@@ -8,7 +8,7 @@ from linebot.exceptions import InvalidSignatureError
 from linebot.models import MessageEvent, TextMessage, TextSendMessage
 import google.generativeai as genai
 
-from character_makot import MAKOT  # ← v5 キャラクター定義を利用
+from character_makot import MAKOT  # v5.4 フラット構造を想定
 
 app = Flask(__name__)
 
@@ -26,12 +26,13 @@ webhook_handler           = WebhookHandler(LINE_CHANNEL_SECRET)
 chat_histories = {}
 
 # ----------- ユーティリティ -----------
+
 def build_system_prompt(user_history: str) -> str:
     """
     user_history: 直近のユーザー発言ログを改行区切りで受け取る。
     persona + ランダム抽出ルール + スパイスフレーズ + 必要に応じた extra情報 を組み立て。
     """
-    # 1) コアプロファイル
+    # 1) コアプロフィール
     core = MAKOT["persona"].strip()
 
     # 2) 行動ルールから6つランダムピック
@@ -64,25 +65,50 @@ def build_system_prompt(user_history: str) -> str:
 
     return prompt
 
+def limit_shirankedo(text: str, max_count: int = 1) -> str:
+    """
+    "しらんけど" の出現回数を max_count に制限する。
+    """
+    parts = text.split("しらんけど")
+    if len(parts) - 1 <= max_count:
+        return text
+    # 2回目以降をつなぎ直して削除
+    return "しらんけど".join(parts[:max_count + 1]) + "".join(parts[max_count + 1:])
 
 
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    """Gemini に問い合わせて返答取得"""
+    """Gemini API に問い合わせて、まこTとしての返信を取得"""
     history = chat_histories.get(user_id, [])
     history.append(f"ユーザー: {user_input}")
+    # 直近2発言分だけをプロンプトに利用
     context = "\n".join(history[-2:])
 
     system_prompt = build_system_prompt(context)
 
     try:
-        model    = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
-        response = model.generate_content(system_prompt)
-        reply    = response.text.strip()
+        model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
+        messages = [
+            {"role": "system", "content": system_prompt},
+            {"role": "user",   "content": user_input}
+        ]
+        response = model.generate_content(
+            messages=messages,
+            generation_config={
+                "temperature": 0.7,
+                "max_output_tokens": 512
+            }
+        )
+        reply = response.text.strip()
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
 
+    # "しらんけど" の多用を抑える
+    reply = limit_shirankedo(reply, max_count=1)
+
+    # 履歴に追加して保存
     history.append(reply)
     chat_histories[user_id] = history
+
     return reply
 
 # ---------- Flask エンドポイント ----------
@@ -97,7 +123,6 @@ def line_webhook():
         return "Invalid signature", 400
     return "OK", 200
 
-
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     src_type  = event.source.type
@@ -109,7 +134,7 @@ def handle_message(event):
         if bot_name not in user_text:
             return
 
-    # ID 決定
+    # ユーザー識別ID
     src_id = (
         event.source.user_id if src_type == "user" else
         event.source.group_id if src_type == "group" else
@@ -123,7 +148,9 @@ def handle_message(event):
         TextSendMessage(text=reply_text)
     )
 
-
 @app.route("/")
 def home():
     return "まこT LINE Bot is running!"
+
+if __name__ == "__main__":
+    app.run(debug=True, port=int(os.getenv("PORT", 5000)))
