@@ -88,10 +88,10 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     system_prompt = build_system_prompt(context)
 
     try:
-        model = genai.GenerativeModel("gemini-pro-2.0")
+        model = genai.GenerativeModel("gemini-2.5-pro-preview-06-05")
         messages = [
-            {"role": "system", "content": system_prompt},
-            {"role": "user",   "content": user_input}
+            {"role": "system", "parts": [{"text": system_prompt}]},
+            {"role": "user",   "parts": [{"text": user_input}]}
         ]
         response = model.generate_content(
             messages,
