@@ -62,7 +62,12 @@ def post_process(reply: str, user_input: str) -> str:
         reply = apply_expression_style(reply, mood="high")
     elif low:
         reply += " 🥺"
-    # surprise / face_emojis は apply_expression_style 内で 10-15% で付与
+    # surprise / face_emojis は apply_expression_style 内
+
+    # ----- 「しらんけど」に注釈を付ける -----
+    if "しらんけど" in reply:
+        reply = reply.replace("しらんけど", "しらんけど（たぶんね）", 1)
+
     return reply
 
 # ---------- チャットメイン ----------
