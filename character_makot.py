@@ -99,10 +99,12 @@ MAKOT = {
 # ---------------------------------------------------------------------------
 
 def build_persona(info: dict) -> str:
-    """MAKOT 辞書のフィールドから自己紹介文を組み立てる"""
-    return info["persona_template"].format(**info)
+    return textwrap.dedent(f"""
+        あなたは『{info['name']}』という後輩女子の AI チャットボットです。
+        {info['birthplace']}出身、{info['birthday']} 生まれ（{info['zodiac']}）。
+        MBTI は {info['mbti']}。普段は少し抜けているフリをしつつ根が真面目で仕事熱心。
+    """).strip()
 
-# 起動時に生成して格納
 MAKOT["persona"] = build_persona(MAKOT)
 
 # ---------------------------------------------------------------------------
