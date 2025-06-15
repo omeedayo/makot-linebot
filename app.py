@@ -95,23 +95,25 @@ def post_process(reply: str, user_input: str) -> str:
 # ------------------------------------------------------------
 
 def generate_gemini_image(prompt: str) -> str:
+    # 画像生成用モデルを指定
     model = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
+    # generation_config に response_modalities を渡す
     res = model.generate_content(
         prompt,
-        response_modalities=["TEXT", "IMAGE"]   # ← ここを必ず指定
+        generation_config={"response_modalities": ["IMAGE"]}
     )
-
-    # 画像(base64) を取得
-    img_b64 = res.candidates[0].content.parts[1].inline_data.data
+    # IMAGE 部分は parts[0] に入ってきます
+    img_b64 = res.candidates[0].content.parts[0].inline_data.data
     img_bin = base64.b64decode(img_b64)
 
-    # Imgur にアップロード
+    # Imgur へアップロード
     r = requests.post(
         "https://api.imgur.com/3/image",
-        headers={"Authorization": f"Client-ID {os.getenv('IMGUR_CLIENT_ID')}"},
+        headers={"Authorization": f"Client-ID {IMGUR_CLIENT_ID}"},
         files={"image": img_bin}
     )
     return r.json()["data"]["link"]
+
 # ------------------------------------------------------------
 # Main chat logic
 # ------------------------------------------------------------
