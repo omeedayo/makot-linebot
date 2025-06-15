@@ -39,7 +39,7 @@ GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
 GCP_CREDENTIALS_JSON_STR = os.getenv("GCP_CREDENTIALS_JSON")
 
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-1.5-pro-latest")
+text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
