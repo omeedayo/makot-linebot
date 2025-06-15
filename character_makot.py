@@ -166,8 +166,8 @@ def apply_expression_style(text: str, mood: str = "normal") -> str:
 # ---------------------------------------------------------------------------
 # Few‑shot サンプルを組み立て
 # ---------------------------------------------------------------------------
-
 def sample_examples(k: int = 3) -> str:
+    k = min(k, len(MAKOT["example_conversation"]))           # ★ 追加
     ex = random.sample(MAKOT["example_conversation"], k=k)
     return "\n".join(
         f"ユーザー: {e['user']}\nアシスタント: {e['assistant']}" for e in ex
