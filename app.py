@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (バグ修正済み・完全最終版)
+# app.py (【真】最終版：バグ修正＋人間味＋画像生成＋永続記憶)
 # ============================================================
 
 import os
@@ -39,7 +39,7 @@ GCP_LOCATION = os.getenv("GCP_LOCATION", "us-central1")
 GCP_CREDENTIALS_JSON_STR = os.getenv("GCP_CREDENTIALS_JSON")
 
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
+text_model = genai.GenerativeModel("gemini-1.5-pro-latest") # ★Proモデルを強く推奨
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -105,12 +105,21 @@ def generate_image_with_rest_api(prompt: str) -> str:
 
 # --- メインロジック ---
 
-# ★★★ バグを修正し、責務を単純化したchat_with_makot関数 ★★★
-def chat_with_makot(user_input: str, history: list) -> str:
-    """純粋にAIの応答を生成することに特化した関数"""
-    current_history = history + [f"ユーザー: {user_input}"]
-    context = "\n".join(current_history[-11:]) # ユーザーの入力も含めて最新11件（約5往復）
+# ★★★ 履歴の形式をAIが理解できるように修正 ★★★
+def create_context_from_history(history: list) -> str:
+    """履歴リストから、AIに渡すための適切なコンテキスト文字列を生成する"""
+    context_lines = []
+    # 履歴は [ユーザー1, アシスタント1, ユーザー2, アシスタント2, ...] の形式を想定
+    for i, text in enumerate(history):
+        if i % 2 == 0:
+            context_lines.append(f"ユーザー: {text}")
+        else:
+            context_lines.append(f"アシスタント: {text}")
+    return "\n".join(context_lines)
 
+def chat_with_makot(user_input: str, history: list) -> str:
+    """AIに応答を生成させ、人間味を加え、純粋な返信テキストを返す"""
+    context = create_context_from_history(history + [user_input])
     topic = guess_topic(user_input)
     system_prompt = build_system_prompt(context, topic=topic) 
 
@@ -125,7 +134,7 @@ def chat_with_makot(user_input: str, history: list) -> str:
     pronoun = decide_pronoun(user_input)
     reply = inject_pronoun(reply, pronoun)
     
-    return reply
+    return reply # ★純粋な返信テキストだけを返す
 
 @app.route("/line_webhook", methods=["POST"])
 def line_webhook():
@@ -150,15 +159,16 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ごめん、画像生成でエラーでちゃった🥺\n理由: {e}"))
         return
         
-    # ★★★ 履歴の読み込みと保存を、このハンドラ関数で行う ★★★
+    # ★★★ 履歴の読み込みと、バグのない形式での保存 ★★★
     raw_history = KV.get(src_id)
+    # 履歴は [ユーザー発言, アシスタント返信, ユーザー発言, ...] の純粋なリスト
     history = json.loads(raw_history) if raw_history else []
     
     # 応答を生成
     reply_text = chat_with_makot(user_text, history)
     
-    # 正しい形式で履歴を更新
-    new_history = history + [f"ユーザー: {user_text}", f"アシスタント: {reply_text}"]
+    # ★★★ バグのない正しい形式で履歴を更新 ★★★
+    new_history = history + [user_text, reply_text]
     new_history = new_history[-10:] # 最新5往復を保持
     KV.set(src_id, json.dumps(new_history, ensure_ascii=False), ex=259200)
 
