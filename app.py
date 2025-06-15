@@ -54,19 +54,23 @@ def inject_pronoun(reply: str, pronoun: str) -> str:
     return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 
 # ---------- 後処理 ----------
+UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
 
 def post_process(reply: str, user_input: str) -> str:
     high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"])
     low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
+
     if high:
         reply = apply_expression_style(reply, mood="high")
     elif low:
         reply += " 🥺"
-    # surprise / face_emojis は apply_expression_style 内
 
-    # ----- 「しらんけど」に注釈を付ける -----
-    if "しらんけど" in reply:
-        reply = reply.replace("しらんけど", "しらんけど（たぶんね）", 1)
+    # 「しらんけど」— 曖昧表現がある返答の 40% だけ付与
+    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
+        reply += " しらんけど"
+
+    # 行数を 1〜2 文に収める
+    reply = "。".join(reply.split("。")[:2])
 
     return reply
 
