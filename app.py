@@ -127,7 +127,7 @@ def generate_image_with_rest_api(prompt: str) -> str: # (中身は変更なし)
 # ------------------------------------------------------------
 def chat_with_makot(user_input: str, user_id: str) -> str:
     # ユーザーIDをキーとして、Vercel KVから会話履歴を読み込む
-    raw_history = kv.get(user_id)
+   raw_history = KV.get(user_id) # ★小文字のkvを大文字のKVに修正
     # 履歴が存在すればJSONからリストに変換、なければ空のリストを作成
     history = json.loads(raw_history) if raw_history else []
 
@@ -154,7 +154,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     
     # 更新した履歴をJSON形式の文字列に変換して、Vercel KVに保存
     # expire=259200 は、3日間アクセスがなければ自動でデータを削除する設定（秒単位）
-    kv.set(user_id, json.dumps(history, ensure_ascii=False), ex=259200)
+    KV.set(user_id, json.dumps(history, ensure_ascii=False), ex=259200) # ★小文字のkvを大文字のKVに修正
     
     return reply
 
