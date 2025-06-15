@@ -3,3 +3,4 @@ line-bot-sdk==3.8.0
 google-generativeai==0.7.1
 requests==2.31.0
 google-auth==2.29.0
+vercel-kv==1.1.0
