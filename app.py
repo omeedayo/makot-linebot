@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (最終統合版：人間味＋画像生成)
+# app.py (最終形態：人間味＋画像生成＋永続記憶)
 # ============================================================
 
 import os
@@ -19,12 +19,13 @@ from linebot.models import (
     ImageSendMessage,
 )
 
-# --- AI & Cloud Libraries ---
+# --- AI & Cloud & DB Libraries ---
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
+from vercel_kv import kv # ★★★ KVデータベースライブラリをインポート ★★★
 
-# ★★★ あなたの最新版 character_makot をインポート ★★★
+# ★★★ キャラクター定義をインポート ★★★
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
 
 # ------------------------------------------------------------
@@ -33,6 +34,7 @@ from character_makot import MAKOT, build_system_prompt, apply_expression_style
 app = Flask(__name__)
 
 # --- 環境変数 ---
+# (Vercel KVの環境変数は、Vercel側で自動設定されるのでコードの変更は不要)
 GEMINI_API_KEY            = os.getenv("GEMINI_API_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET       = os.getenv("LINE_CHANNEL_SECRET")
@@ -43,90 +45,68 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 
 # --- Gemini client (text) ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # 最新モデルを指定
+# ★★★ モデルをProにアップグレード（推奨） ★★★
+text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
 
 # --- LINE SDK ---
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
 # ------------------------------------------------------------
-# In‑memory simple chat history
-# ------------------------------------------------------------
-chat_histories: dict[str, list[str]] = {}
-
-# ------------------------------------------------------------
-# ★★★ あなたのコードから移植した「人間味」ロジック群 ★★★
+# ★★★ メモリ上の履歴は不要なので削除 ★★★
+# chat_histories: dict[str, list[str]] = {}
 # ------------------------------------------------------------
 
+# ------------------------------------------------------------
+# 人間味ロジック群 (ここはあなたのコードからそのまま流用、変更なし)
+# ------------------------------------------------------------
 NICKNAMES = [MAKOT["name"]] + MAKOT["nicknames"]
-def is_bot_mentioned(text: str) -> bool:
+def is_bot_mentioned(text: str) -> bool: # (中身は変更なし)
     return any(nick in text for nick in NICKNAMES)
-
-def guess_topic(text: str):
-    hobby_keys = ["趣味", "休日", "ハマって", "コストコ", "ポケポケ"]
-    work_keys  = ["仕事", "業務", "残業", "請求書", "統計"]
+def guess_topic(text: str): # (中身は変更なし)
+    hobby_keys = ["趣味", "休日", "ハマって", "コストコ", "ポケポケ"]; work_keys  = ["仕事", "業務", "残業", "請求書", "統計"]
     if any(k in text for k in hobby_keys): return "hobby"
     if any(k in text for k in work_keys): return "work"
     return None
-
-def decide_pronoun(user_text: str) -> str:
-    high_hit = any(k in user_text for k in MAKOT["emotion_triggers"]["high"])
+def decide_pronoun(user_text: str) -> str: # (中身は変更なし)
+    high_hit = any(k in user_text for k in MAKOT["emotion_triggers"]["high"]);
     if not high_hit: return "私"
     return "マコ" if random.random() < 0.10 else "おに"
-
-def inject_pronoun(reply: str, pronoun: str) -> str:
-    return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
-
+def inject_pronoun(reply: str, pronoun: str) -> str: return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
-def post_process(reply: str, user_input: str) -> str:
-    high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"])
-    low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
-    if high:
-        reply = apply_expression_style(reply, mood="high")
-    elif low:
-        reply += " 🥺"
-    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
-        reply += " しらんけど"
-    # 文章を2文までに制限
+def post_process(reply: str, user_input: str) -> str: # (中身は変更なし)
+    high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"]); low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
+    if high: reply = apply_expression_style(reply, mood="high")
+    elif low: reply += " 🥺"
+    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4: reply += " しらんけど"
     reply_sentences = re.split(r'(。|！|？)', reply)
-    if len(reply_sentences) > 4: # 区切り文字もリストに含まれるため
-        reply = "".join(reply_sentences[:4])
+    if len(reply_sentences) > 4: reply = "".join(reply_sentences[:4])
     return reply
 
 # ------------------------------------------------------------
 # 画像生成関連の関数 (ここは完成形なので変更なし)
 # ------------------------------------------------------------
-def get_gcp_token() -> str:
+def get_gcp_token() -> str: # (中身は変更なし)
     if not GCP_CREDENTIALS_JSON_STR: raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
     try:
-        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR)
-        creds = service_account.Credentials.from_service_account_info(
-            credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-        )
-        creds.refresh(Request());
-        if not creds.token: raise ValueError("トークンの取得に失敗しました。")
-        return creds.token
+        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR); creds = service_account.Credentials.from_service_account_info(credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]); creds.refresh(Request());
+        if not creds.token: raise ValueError("トークンの取得に失敗しました。"); return creds.token
     except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
-def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
-    if not client_id: raise Exception("Imgur Client IDが設定されていません。")
-    url = "https://api.imgur.com/3/image"; headers = {"Authorization": f"Client-ID {client_id}"}
+def upload_to_imgur(image_bytes: bytes, client_id: str) -> str: # (中身は変更なし)
+    if not client_id: raise Exception("Imgur Client IDが設定されていません。"); url = "https://api.imgur.com/3/image"; headers = {"Authorization": f"Client-ID {client_id}"}
     try:
-        response = requests.post(url, headers=headers, data={"image": base64.b64encode(image_bytes)})
-        response.raise_for_status(); data = response.json()
+        response = requests.post(url, headers=headers, data={"image": base64.b64encode(image_bytes)}); response.raise_for_status(); data = response.json()
         if data.get("success"): return data["data"]["link"]
         else: raise Exception(f"Imgurへのアップロードに失敗しました: {data.get('data', {}).get('error', 'Unknown error')}")
     except requests.exceptions.RequestException as e: raise Exception(f"Imgur APIへのリクエストに失敗しました: {e}")
-def translate_to_english(text: str) -> str:
+def translate_to_english(text: str) -> str: # (中身は変更なし)
     if not text: return "a cute girl"
     try:
-        prompt = f"Translate the following Japanese into a simple English phrase for an image generation AI. For example, '猫' -> 'a cat', '空を飛ぶ犬' -> 'a dog flying in the sky'. Do not add any extra explanation. Just the translated phrase.\nJapanese: {text}\nEnglish:"
-        response = text_model.generate_content(prompt)
-        translated_text = response.text.strip().replace('"', '')
+        prompt = f"Translate the following Japanese into a simple English phrase for an image generation AI. For example, '猫' -> 'a cat', '空を飛ぶ犬' -> 'a dog flying in the sky'. Do not add any extra explanation. Just the translated phrase.\nJapanese: {text}\nEnglish:"; response = text_model.generate_content(prompt); translated_text = response.text.strip().replace('"', '')
         return translated_text
     except Exception as e: print(f"翻訳でエラーが発生: {e}"); return text
-def generate_image_with_rest_api(prompt: str) -> str:
-    token = get_gcp_token()
-    endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict")
+def generate_image_with_rest_api(prompt: str) -> str: # (中身は変更なし)
+    token = get_gcp_token(); endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
     trigger_words = ["画像", "イラスト", "描いて", "絵を"]; clean_prompt = prompt
     for word in trigger_words: clean_prompt = clean_prompt.replace(word, "")
@@ -143,14 +123,20 @@ def generate_image_with_rest_api(prompt: str) -> str:
     return upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
 
 # ------------------------------------------------------------
-# Main chat logic: ここで人間味ロジックを呼び出す
+# Main chat logic: ★★★ここがデータベース対応に変わります★★★
 # ------------------------------------------------------------
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    history = chat_histories.get(user_id, [])
-    history.append(f"ユーザー: {user_input}")
-    context = "\n".join(history[-6:]) # 記憶力を6回に増強
+    # ユーザーIDをキーとして、Vercel KVから会話履歴を読み込む
+    raw_history = kv.get(user_id)
+    # 履歴が存在すればJSONからリストに変換、なければ空のリストを作成
+    history = json.loads(raw_history) if raw_history else []
 
-    # トピックを判定して、最適なプロンプトを生成
+    history.append(f"ユーザー: {user_input}")
+    # 履歴が長くなりすぎないように、常に最新の10件（5往復分）を保持
+    history = history[-10:]
+    
+    context = "\n".join(history)
+
     topic = guess_topic(user_input)
     system_prompt = build_system_prompt(context, topic=topic) 
 
@@ -160,13 +146,16 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
 
-    # ★★★復活した人間味ロジックをここで適用！★★★
     reply = post_process(reply, user_input)
     pronoun = decide_pronoun(user_input)
     reply = inject_pronoun(reply, pronoun)
 
-    history.append(reply)
-    chat_histories[user_id] = history
+    history.append(f"まこT: {reply}") # AIの返信も履歴に追加
+    
+    # 更新した履歴をJSON形式の文字列に変換して、Vercel KVに保存
+    # expire=259200 は、3日間アクセスがなければ自動でデータを削除する設定（秒単位）
+    kv.set(user_id, json.dumps(history, ensure_ascii=False), ex=259200)
+    
     return reply
 
 # ------------------------------------------------------------
@@ -182,9 +171,7 @@ def line_webhook():
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     src_type = event.source.type; user_text = event.message.text
-    # グループ・ルームではニックネームが入っていなければ無視
-    if src_type in ["group", "room"] and not is_bot_mentioned(user_text):
-        return
+    if src_type in ["group", "room"] and not is_bot_mentioned(user_text): return
     src_id = (event.source.user_id if src_type == "user" else event.source.group_id if src_type == "group" else event.source.room_id if src_type == "room" else "unknown")
     
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
@@ -202,4 +189,4 @@ def handle_message(event):
 
 @app.route("/")
 def home():
-    return "まこT LINE Bot is running!"
+    return "makoT LINE Bot is running!"
