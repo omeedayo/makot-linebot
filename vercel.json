@@ -5,6 +5,7 @@
       "src": "app.py",
       "use": "@vercel/python",
       "config": {
+        "maxLambdaSize": "15mb",
         "exclude_files": [
           "google/cloud/aiplatform/datasets",
           "google/cloud/aiplatform/explain",
@@ -15,11 +16,37 @@
           "google/cloud/aiplatform/training_jobs",
           "google/cloud/bigquery_storage_v1",
           "google/cloud/bigquery",
+          "google/cloud/automl",
+          "google/cloud/billing",
+          "google/cloud/container",
+          "google/cloud/datacatalog",
+          "google/cloud/datastore",
+          "google/cloud/dlp",
+          "google/cloud/firestore",
+          "google/cloud/functions",
+          "google/cloud/iam",
+          "google/cloud/iot",
+          "google/cloud/kms",
+          "google/cloud/language",
+          "google/cloud/logging",
+          "google/cloud/monitoring",
+          "google/cloud/notebooks",
+          "google/cloud/pubsub",
+          "google/cloud/spanner",
+          "google/cloud/speech",
+          "google/cloud/storage",
+          "google/cloud/tasks",
+          "google/cloud/translate",
+          "google/cloud/video",
+          "google/cloud/vision_v1",
+          "google/cloud/vision",
           "google_auth_oauthlib",
           "tensorboard",
           "tensorflow",
           "pandas",
-          "pyarrow"
+          "pyarrow",
+          "numpy/core/tests",
+          "scipy"
         ]
       }
     }
