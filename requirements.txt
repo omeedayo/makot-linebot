@@ -1,3 +1,4 @@
-flask
-line-bot-sdk
-google-generativeai
+flask==3.0.2                # サーバー
+line-bot-sdk==3.8.0         # LINE Messaging API
+google-generativeai>=0.7.1  # ← 画像対応版（必須）
+requests>=2.32.0            # Imgur アップロード用
