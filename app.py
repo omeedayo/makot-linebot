@@ -91,19 +91,27 @@ def post_process(reply: str, user_input: str) -> str:
 # ------------------------------------------------------------
 
 def get_gcp_token() -> str:
-    """サービスアカウントキーからGCP API用のアクセストークンを取得する"""
+    """サービスアカウントキーからGCP API用のアクセストークンを確実に取得する"""
     if not GCP_CREDENTIALS_JSON_STR:
         raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
     
-    credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR)
-    creds = service_account.Credentials.from_service_account_info(
-        credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
-    )
-    
-    if creds.expired and creds.refresh_token:
+    try:
+        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR)
+        creds = service_account.Credentials.from_service_account_info(
+            credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"]
+        )
+        
+        # 常にトークンをリフレッシュして最新の状態を確保する
         creds.refresh(Request())
-    
-    return creds.token
+        
+        if not creds.token:
+            raise ValueError("トークンの取得に失敗しました。")
+        
+        return creds.token
+    except Exception as e:
+        # 認証プロセスでエラーが起きた場合に詳細をログに出力
+        print(f"get_gcp_tokenでエラー: {e}")
+        raise
 
 def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
     """画像をImgurにアップロードして公開URLを返す (この関数は変更なし)"""
