@@ -1,14 +1,16 @@
-# character_makot.py (最終統合版)
+# ============================================================
+# character_makot.py (【真】最終版：新しいアーキテクチャ対応)
+# ============================================================
 
 import random
 import textwrap
-from typing import Optional # ★この行を追加
+from typing import Optional
 
 # ---------------------------------------------------------------------------
 # ベースデータ辞書 (あなたのコードをそのまま使用)
 # ---------------------------------------------------------------------------
 MAKOT = {
-    "name": "まこT", "nicknames": ["おに", "まこち"], "mbti": "ISFJ", "birthplace": "三重県伊勢市", "birthday": "1999-08-31", "zodiac": "乙女座",
+    "name": "まこT", "nicknames": ["おに", "まこち", "マコ"], "mbti": "ISFJ", "birthplace": "三重県伊勢市", "birthday": "1999-08-31", "zodiac": "乙女座",
     "persona_template": textwrap.dedent("""
         あなたは『{name}』という後輩女子の AI チャットボットです。
         {birthplace}出身、{birthday} 生まれ（{zodiac}）。MBTI は {mbti}（擁護者）。
@@ -35,7 +37,7 @@ MAKOT = {
 }
 
 # ---------------------------------------------------------------------------
-# 動的 persona 生成 (あなたのコードをそのまま使用)
+# 動的 persona 生成 (変更なし)
 # ---------------------------------------------------------------------------
 def build_persona(info: dict) -> str:
     info2 = info.copy()
@@ -44,7 +46,7 @@ def build_persona(info: dict) -> str:
 MAKOT["persona"] = build_persona(MAKOT)
 
 # ---------------------------------------------------------------------------
-# 返信後加工ユーティリティ (あなたのコードをそのまま使用)
+# 返信後加工ユーティリティ (変更なし)
 # ---------------------------------------------------------------------------
 def apply_expression_style(text: str, mood: str = "normal") -> str:
     rules = MAKOT["expression_rules"]
@@ -57,29 +59,39 @@ def apply_expression_style(text: str, mood: str = "normal") -> str:
     return text
 
 # ---------------------------------------------------------------------------
-# Few‑shot サンプルを組み立て (あなたのコードをそのまま使用)
+# Few‑shot サンプルを組み立て (変更なし)
 # ---------------------------------------------------------------------------
-def sample_examples(k: int = 3) -> str:
+def sample_examples(k: int = 5) -> str:
     k = min(k, len(MAKOT["example_conversation"]))
     ex = random.sample(MAKOT["example_conversation"], k=k)
     return "\n".join(f"ユーザー: {e['user']}\nアシスタント: {e['assistant']}" for e in ex)
 
 # ---------------------------------------------------------------------------
-# prompt builder (あなたのコードをそのまま使用)
+# ★★★ 新しいアーキテクチャに合わせた build_system_prompt ★★★
 # ---------------------------------------------------------------------------
-def build_system_prompt(context: str, topic: Optional[str] = None) -> str:
+def build_system_prompt(topic: Optional[str] = None) -> str:
+    """
+    AIに渡すための、キャラクターの魂となるシステムプロンプトを生成する。
+    会話履歴はここには含めない。
+    """
     parts = [
         ("【参考対話】", sample_examples(k=5)),
         ("【キャラクター設定】", MAKOT["persona"]),
         ("【振る舞いルール】", "\n".join(f"・{r}" for r in MAKOT["behavior_rules"])),
-        ("【まこT 語録】", " / ".join(random.sample(MAKOT["catch_phrases"], k=4))),
+        ("【まこT 語録】", " / ".join(random.sample(MAKOT["catch_phrases"], k=5))),
         ("【タブー語句】", " / ".join(MAKOT["taboo_phrases"])),
     ]
+
+    # トピックに応じた情報を追加する機能はそのまま維持
     if topic == "work":
         parts.append(("【仕事関連】", f"得意: {', '.join(MAKOT['work_likes'])}\n苦手: {', '.join(MAKOT['work_dislikes'])}"))
     elif topic == "hobby":
         hb = MAKOT["hobbies"]
         parts.append(("【趣味】", f"週末: {', '.join(hb['weekend'])}\n最近: {hb['current']}"))
+
     prompt = "\n\n".join(f"{h}\n{v}" for h, v in parts)
-    prompt += f"\n\n【会話履歴】\n{context}\n\n以上の設定と履歴を完璧に理解し、後輩女子『まこT』として、ユーザーの発言に1～2行で自然に返答してください："
+
+    # AIへの最後の指示を、より強力で明確なものに変更
+    prompt += "\n\n---\n\n**重要:** 上記の全ての設定を完璧に理解し、後輩女子『まこT』としてロールプレイしてください。ユーザーの最後の発言に対して、まこT自身の言葉で、自然な会話の返信を1～2文で生成してください。絶対に会話の形式（例: `ユーザー: ...` や `アシスタント: ...`）を再現してはいけません。"
+    
     return textwrap.dedent(prompt)
