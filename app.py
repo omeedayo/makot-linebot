@@ -141,12 +141,25 @@ def generate_image_with_rest_api(prompt: str) -> str:
         "Content-Type": "application/json; charset=utf-8",
     }
     
+      # LINEのメッセージから「描いて」などのトリガーワードを除去してプロンプトを整形
+    trigger_words = ["画像", "イラスト", "描いて", "絵を"]
+    clean_prompt = prompt
+    for word in trigger_words:
+        clean_prompt = clean_prompt.replace(word, "")
+    clean_prompt = clean_prompt.strip()
+
+    # もし整形後のプロンプトが空なら、デフォルトのプロンプトを設定
+    if not clean_prompt:
+        clean_prompt = "かわいい女の子"
+
+    final_prompt = f"anime style illustration, masterpiece, best quality, {clean_prompt}"
+    
     data = {
-        "instances": [{"prompt": f"高品質なアニメイラスト, {prompt[:100]}"}],
+        "instances": [{"prompt": final_prompt}],
         "parameters": {
             "sampleCount": 1,
             "aspectRatio": "1:1",
-            "negativePrompt": "low quality, bad hands, text, watermark"
+            "negativePrompt": "low quality, bad hands, text, watermark, signature"
         }
     }
     
