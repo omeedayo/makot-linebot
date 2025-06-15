@@ -23,7 +23,7 @@ from linebot.models import (
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
-from vercel_kv import kv # ★★★ KVデータベースライブラリをインポート ★★★
+from vercel_kv import KV # ★★★ KVデータベースライブラリをインポート ★★★
 
 # ★★★ キャラクター定義をインポート ★★★
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
