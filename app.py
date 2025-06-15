@@ -9,6 +9,8 @@ import re
 import base64
 from io import BytesIO
 
+# 追加 import
+from google.generativeai import image
 import requests
 from flask import Flask, request
 from linebot import LineBotApi, WebhookHandler
@@ -94,26 +96,16 @@ def post_process(reply: str, user_input: str) -> str:
 # Gemini Image ➜ Imgur upload
 # ------------------------------------------------------------
 
+
 def generate_gemini_image(prompt: str) -> str:
-    # Gemini Image モデルを指定
-    model = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
-    # 画像（PNG）で返してもらうよう指定
-    res = model.generate_content(
-        prompt,
-        generation_config={"response_mime_type": "image/png"}
+    # IMAGE 専用モデルを呼び出し
+    resp = image.generate(
+        prompt=prompt,
+        model="image-generation-001"  # 画像生成用モデル
     )
+    # SDK が返すURLをそのまま返す
+    return resp.data[0].uri
 
-    # parts[0] に画像データが入っている
-    img_b64 = res.candidates[0].content.parts[0].inline_data.data
-    img_bin = base64.b64decode(img_b64)
-
-    # Imgur にアップロード
-    r = requests.post(
-        "https://api.imgur.com/3/image",
-        headers={"Authorization": f"Client-ID {os.getenv('IMGUR_CLIENT_ID')}"},
-        files={"image": img_bin}
-    )
-    return r.json()["data"]["link"]
 
 # ------------------------------------------------------------
 # Main chat logic
