@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (最終修正版)
+# app.py (最終修正版 v2)
 # Gemini Flash (text)  +  Vertex AI Imagen (REST API)  +  Imgur upload
 # ============================================================
 
@@ -22,7 +22,6 @@ from linebot.models import (
 
 # --- AI & Cloud Libraries ---
 import google.generativeai as genai
-# ★変更: google-authライブラリで認証を行う
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 
@@ -86,7 +85,6 @@ def post_process(reply: str, user_input: str) -> str:
     return reply
 
 # ------------------------------------------------------------
-# ★★★ ここから大幅に変更 ★★★
 # Vertex AI Imagen (REST API) ➜ Imgur upload
 # ------------------------------------------------------------
 
@@ -133,7 +131,6 @@ def generate_image_with_rest_api(prompt: str) -> str:
     """Vertex AIのREST APIを直接呼び出して画像を生成し、URLを返す"""
     token = get_gcp_token()
     
-    # Vertex AI Imagen APIのエンドポイント
     endpoint_url = (
         f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}"
         f"/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict"
@@ -144,7 +141,6 @@ def generate_image_with_rest_api(prompt: str) -> str:
         "Content-Type": "application/json; charset=utf-8",
     }
     
-    # APIに送るデータ本体
     data = {
         "instances": [{"prompt": f"高品質なアニメイラスト, {prompt[:100]}"}],
         "parameters": {
@@ -154,21 +150,27 @@ def generate_image_with_rest_api(prompt: str) -> str:
         }
     }
     
-    # APIにリクエストを送信
     response = requests.post(endpoint_url, headers=headers, json=data)
-    response.raise_for_status() # HTTPエラーがあれば例外を発生
+    response.raise_for_status()
     
-    # レスポンスからBase64エンコードされた画像データを取得
     response_data = response.json()
+
+    # ★★★ここから変更★★★
+    # デバッグ用に、サーバーからの応答を全部ログに出力する
+    print("--- Vertex AIからの応答 ---")
+    print(json.dumps(response_data, indent=2, ensure_ascii=False))
+    print("--------------------------")
+
     if "predictions" not in response_data or not response_data["predictions"]:
-        raise Exception("APIから画像の予測データが返されませんでした。")
+        # エラーメッセージに、サーバーの応答内容を含める
+        error_info = response_data.get("error", {}).get("message", json.dumps(response_data))
+        raise Exception(f"APIから画像データが返されませんでした。サーバーの応答: {error_info}")
+    # ★★★ここまで変更★★★
         
     b64_image = response_data["predictions"][0]["bytesBase64Encoded"]
     
-    # Base64をデコードして画像のバイトデータに戻す
     image_bytes = base64.b64decode(b64_image)
     
-    # Imgurにアップロードして公開URLを取得
     imgur_url = upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
     
     return imgur_url
@@ -220,12 +222,10 @@ def handle_message(event):
     )
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
-            # ★変更: 新しい関数を呼び出す
             img_url = generate_image_with_rest_api(user_text) 
             msg = ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
             line_bot_api.reply_message(event.reply_token, msg)
         except Exception as e:
-            # エラーメッセージをより詳細に表示
             print(f"画像生成でエラーが発生: {e}") 
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ごめん、画像生成でエラーでちゃった🥺\n理由: {e}"))
         return
