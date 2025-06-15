@@ -96,10 +96,8 @@ def post_process(reply: str, user_input: str) -> str:
 
 def generate_gemini_image(prompt: str) -> str:
     model = genai.GenerativeModel("gemini-2.0-flash-preview-image-generation")
-        res = model.generate_content(
-        prompt,
-        response_modalities=["TEXT", "IMAGE"]   # ★ 追加
-    )
+    res = model.generate_content(prompt)
+
     # 画像(base64) を取得
     img_b64 = res.candidates[0].content.parts[1].inline_data.data
     img_bin = base64.b64decode(img_b64)
@@ -111,6 +109,7 @@ def generate_gemini_image(prompt: str) -> str:
         files={"image": img_bin}
     )
     return r.json()["data"]["link"]   # HTTPS URL を返す
+
 # ------------------------------------------------------------
 # Main chat logic
 # ------------------------------------------------------------
