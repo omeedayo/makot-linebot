@@ -10,7 +10,7 @@ import base64
 from io import BytesIO
 
 # 追加 import
-from google.generativeai import image
+
 import requests
 from flask import Flask, request
 from linebot import LineBotApi, WebhookHandler
@@ -97,14 +97,14 @@ def post_process(reply: str, user_input: str) -> str:
 # ------------------------------------------------------------
 
 
+# Gemini Image ➜ Imgur upload
 def generate_gemini_image(prompt: str) -> str:
-    # IMAGE 専用モデルを呼び出し
-    resp = image.generate(
-        prompt=prompt,
-        model="image-generation-001"  # 画像生成用モデル
-    )
-    # SDK が返すURLをそのまま返す
-    return resp.data[0].uri
+    # Image モデルを呼び出し
+    img_model = genai.ImageGenerationModel("image-generation-001")
+    # 1枚だけ生成
+    result = img_model.generate_images(prompt=prompt, number_of_images=1)
+    # SDK が返す URI をそのまま返す
+    return result.data[0].uri
 
 
 # ------------------------------------------------------------
