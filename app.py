@@ -43,7 +43,7 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 
 # --- Gemini client (text) ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-1.5-flash-latest") # 最新モデルを指定
+text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # 最新モデルを指定
 
 # --- LINE SDK ---
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
