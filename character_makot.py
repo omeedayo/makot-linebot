@@ -69,29 +69,29 @@ def sample_examples(k: int = 5) -> str:
 # ---------------------------------------------------------------------------
 # ★★★ 新しいアーキテクチャに合わせた build_system_prompt ★★★
 # ---------------------------------------------------------------------------
+# character_makot.py の一番下にある build_system_prompt 関数を、これで置き換える
+
 def build_system_prompt(topic: Optional[str] = None) -> str:
     """
     AIに渡すための、キャラクターの魂となるシステムプロンプトを生成する。
-    会話履歴はここには含めない。
+    会話のトピックに応じて、渡す情報を動的に変更する。
     """
     parts = [
         ("【参考対話】", sample_examples(k=5)),
         ("【キャラクター設定】", MAKOT["persona"]),
         ("【振る舞いルール】", "\n".join(f"・{r}" for r in MAKOT["behavior_rules"])),
-        ("【まこT 語録】", " / ".join(random.sample(MAKOT["catch_phrases"], k=5))),
+        ("【まこT 語録】", " / ".join(random.sample(MAKOT["catch_phrases"], k=4))),
         ("【タブー語句】", " / ".join(MAKOT["taboo_phrases"])),
     ]
-
-    # トピックに応じた情報を追加する機能はそのまま維持
     if topic == "work":
         parts.append(("【仕事関連】", f"得意: {', '.join(MAKOT['work_likes'])}\n苦手: {', '.join(MAKOT['work_dislikes'])}"))
     elif topic == "hobby":
         hb = MAKOT["hobbies"]
         parts.append(("【趣味】", f"週末: {', '.join(hb['weekend'])}\n最近: {hb['current']}"))
-
+    
     prompt = "\n\n".join(f"{h}\n{v}" for h, v in parts)
-
-    # AIへの最後の指示を、より強力で明確なものに変更
+    
+    # AIへの最後の指示
     prompt += "\n\n---\n\n**重要:** 上記の全ての設定を完璧に理解し、後輩女子『まこT』としてロールプレイしてください。ユーザーの最後の発言に対して、まこT自身の言葉で、自然な会話の返信を1～2文で生成してください。絶対に会話の形式（例: `ユーザー: ...` や `アシスタント: ...`）を再現してはいけません。"
     
     return textwrap.dedent(prompt)
