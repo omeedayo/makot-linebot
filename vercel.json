@@ -3,7 +3,25 @@
   "builds": [
     {
       "src": "app.py",
-      "use": "@vercel/python"
+      "use": "@vercel/python",
+      "config": {
+        "exclude_files": [
+          "google/cloud/aiplatform/datasets",
+          "google/cloud/aiplatform/explain",
+          "google/cloud/aiplatform/featurestore",
+          "google/cloud/aiplatform/jobs",
+          "google/cloud/aiplatform/model_monitoring",
+          "google/cloud/aiplatform/tensorboard",
+          "google/cloud/aiplatform/training_jobs",
+          "google/cloud/bigquery_storage_v1",
+          "google/cloud/bigquery",
+          "google_auth_oauthlib",
+          "tensorboard",
+          "tensorflow",
+          "pandas",
+          "pyarrow"
+        ]
+      }
     }
   ],
   "routes": [
