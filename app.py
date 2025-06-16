@@ -23,7 +23,7 @@ from linebot.models import (
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
-from vercel_kv import KV  # ★ 変更: 大文字のKVクラスをインポート
+import redis  # ★ 変更: vercel_kv の代わりに redis をインポート
 
 # ★★★ あなたの最新版 character_makot をインポート ★★★
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
@@ -41,6 +41,7 @@ IMGUR_CLIENT_ID           = os.getenv("IMGUR_CLIENT_ID")
 GCP_PROJECT_ID            = os.getenv("GCP_PROJECT_ID")
 GCP_LOCATION              = os.getenv("GCP_LOCATION", "us-central1")
 GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
+REDIS_URL                 = os.getenv("REDIS_URL") # ★ 追加: RedisのURLを取得
 
 # --- Gemini client (text) ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
@@ -50,17 +51,19 @@ text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ★ 追加: インポートしたKVクラスからインスタンスを作成
-kv = KV()
+# ★ 変更: Redisクライアントを初期化
+if not REDIS_URL:
+    raise ValueError("REDIS_URL 環境変数が設定されていません。")
+redis_client = redis.from_url(REDIS_URL)
+
 
 # ------------------------------------------------------------
-# ★★★ あなたのコードから移植した「人間味」ロジック群 ★★★
+# ★★★ あなたのコードから移植した「人間味」ロジック群 ★★★ (変更なし)
 # ------------------------------------------------------------
-
 NICKNAMES = [MAKOT["name"]] + MAKOT["nicknames"]
 def is_bot_mentioned(text: str) -> bool:
     return any(nick in text for nick in NICKNAMES)
-
+# ... (以降の人間味ロジックは変更なしのため省略) ...
 def guess_topic(text: str):
     hobby_keys = ["趣味", "休日", "ハマって", "コストコ", "ポケポケ"]
     work_keys  = ["仕事", "業務", "残業", "請求書", "統計"]
@@ -141,23 +144,20 @@ def generate_image_with_rest_api(prompt: str) -> str:
     b64_image = response_data["predictions"][0]["bytesBase64Encoded"]; image_bytes = base64.b64decode(b64_image)
     return upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
 
+
 # ------------------------------------------------------------
-# Main chat logic: ここで人間味ロジックを呼び出す
+# Main chat logic: redis を使って永続化
 # ------------------------------------------------------------
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    # Vercel KVから履歴を取得するためのキーを生成
     history_key = f"chat_history:{user_id}"
 
-    # Vercel KVから会話履歴(リスト)を取得。なければ空のリストで初期化。
-    history: list[str] = kv.get(history_key) or []
+    # ★ 変更: RedisからJSON文字列として履歴を取得
+    history_json = redis_client.get(history_key)
+    # JSON文字列をPythonのリストに変換。データがなければ空のリストを作成。
+    history: list[str] = json.loads(history_json) if history_json else []
 
-    # 今回のユーザー入力を履歴に追加
     history.append(f"ユーザー: {user_input}")
-
-    # Geminiに渡すコンテキストを作成 (直近6往復=12メッセージ)
     context = "\n".join(history[-12:])
-
-    # トピックを判定して、最適なプロンプトを生成
     topic = guess_topic(user_input)
     system_prompt = build_system_prompt(context, topic=topic)
 
@@ -167,22 +167,19 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
 
-    # ★★★復活した人間味ロジックをここで適用！★★★
     reply = post_process(reply, user_input)
     pronoun = decide_pronoun(user_input)
     reply = inject_pronoun(reply, pronoun)
 
-    # AIの返信を履歴に追加 (プロンプトの形式に合わせてプレフィックスを付与)
     history.append(f"アシスタント: {reply}")
 
-    # Vercel KVに更新した履歴を保存
-    # 無限に増えないように、最新50件のメッセージに絞って保存
-    kv.set(history_key, history[-50:])
+    # ★ 変更: PythonリストをJSON文字列に変換してRedisに保存
+    redis_client.set(history_key, json.dumps(history[-50:]))
 
     return reply
 
 # ------------------------------------------------------------
-# Flask endpoints (ほぼ変更なし)
+# Flask endpoints (変更なし)
 # ------------------------------------------------------------
 @app.route("/line_webhook", methods=["POST"])
 def line_webhook():
@@ -194,7 +191,6 @@ def line_webhook():
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     src_type = event.source.type; user_text = event.message.text
-    # グループ・ルームではニックネームが入っていなければ無視
     if src_type in ["group", "room"] and not is_bot_mentioned(user_text):
         return
     src_id = (event.source.user_id if src_type == "user" else event.source.group_id if src_type == "group" else event.source.room_id if src_type == "room" else "unknown")
