@@ -23,7 +23,7 @@ from linebot.models import (
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
-from vercel_kv import kv  # ★ 追加: Vercel KVライブラリをインポート
+from vercel_kv import KV  # ★ 変更: 大文字のKVクラスをインポート
 
 # ★★★ あなたの最新版 character_makot をインポート ★★★
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
@@ -44,21 +44,17 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 
 # --- Gemini client (text) ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # 最新モデルを指定
+text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
 
 # --- LINE SDK ---
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ★ 変更: インメモリの履歴を削除
-# ------------------------------------------------------------
-# In‑memory simple chat history
-# ------------------------------------------------------------
-# chat_histories: dict[str, list[str]] = {} # ← この行は不要になったので削除
+# ★ 追加: インポートしたKVクラスからインスタンスを作成
+kv = KV()
 
 # ------------------------------------------------------------
 # ★★★ あなたのコードから移植した「人間味」ロジック群 ★★★
-# (このセクションは変更なし)
 # ------------------------------------------------------------
 
 NICKNAMES = [MAKOT["name"]] + MAKOT["nicknames"]
@@ -145,17 +141,16 @@ def generate_image_with_rest_api(prompt: str) -> str:
     b64_image = response_data["predictions"][0]["bytesBase64Encoded"]; image_bytes = base64.b64decode(b64_image)
     return upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
 
-# ★ 変更: Vercel KVを使って会話履歴を永続化するロジックに全面的に書き換え
 # ------------------------------------------------------------
 # Main chat logic: ここで人間味ロジックを呼び出す
 # ------------------------------------------------------------
 def chat_with_makot(user_input: str, user_id: str) -> str:
     # Vercel KVから履歴を取得するためのキーを生成
     history_key = f"chat_history:{user_id}"
-    
+
     # Vercel KVから会話履歴(リスト)を取得。なければ空のリストで初期化。
     history: list[str] = kv.get(history_key) or []
-    
+
     # 今回のユーザー入力を履歴に追加
     history.append(f"ユーザー: {user_input}")
 
@@ -164,7 +159,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
     # トピックを判定して、最適なプロンプトを生成
     topic = guess_topic(user_input)
-    system_prompt = build_system_prompt(context, topic=topic) 
+    system_prompt = build_system_prompt(context, topic=topic)
 
     try:
         response = text_model.generate_content(system_prompt)
@@ -179,11 +174,11 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
     # AIの返信を履歴に追加 (プロンプトの形式に合わせてプレフィックスを付与)
     history.append(f"アシスタント: {reply}")
-    
+
     # Vercel KVに更新した履歴を保存
     # 無限に増えないように、最新50件のメッセージに絞って保存
     kv.set(history_key, history[-50:])
-    
+
     return reply
 
 # ------------------------------------------------------------
@@ -203,17 +198,17 @@ def handle_message(event):
     if src_type in ["group", "room"] and not is_bot_mentioned(user_text):
         return
     src_id = (event.source.user_id if src_type == "user" else event.source.group_id if src_type == "group" else event.source.room_id if src_type == "room" else "unknown")
-    
+
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
-            img_url = generate_image_with_rest_api(user_text) 
+            img_url = generate_image_with_rest_api(user_text)
             msg = ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
             line_bot_api.reply_message(event.reply_token, msg)
         except Exception as e:
-            print(f"画像生成でエラーが発生: {e}") 
+            print(f"画像生成でエラーが発生: {e}")
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ごめん、画像生成でエラーでちゃった🥺\n理由: {e}"))
         return
-        
+
     reply_text = chat_with_makot(user_text, user_id=src_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
