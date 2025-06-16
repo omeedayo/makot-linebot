@@ -17,6 +17,13 @@ from linebot.models import (
     TextMessage,
     TextSendMessage,
     ImageSendMessage,
+    JoinEvent,         # グループ参加イベント
+    LeaveEvent,        # グループ退出イベント
+    MemberJoinedEvent, # メンバー参加イベント
+    MemberLeftEvent,   # メンバー退出イベント
+    StickerMessage,    # スタンプ
+    VideoMessage,      # 動画
+    AudioMessage,      # 音声
 )
 
 # --- AI & Cloud Libraries ---
@@ -207,6 +214,27 @@ def handle_message(event):
 
     reply_text = chat_with_makot(user_text, user_id=src_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+
+# グループ関連のイベントをすべて処理するハンドラー
+@webhook_handler.add([JoinEvent, LeaveEvent, MemberJoinedEvent, MemberLeftEvent])
+def handle_group_events(event):
+    """
+    Bot自身の参加/退出イベントや、他のメンバーの参加/退出イベントが発生した際に呼び出される。
+    現在は特に何もする必要がないため、pass（何もしない）で正常終了させる。
+    これにより、LINEプラットフォーム側でエラーと判定されるのを防ぐ。
+    """
+    pass
+
+# テキスト以外のメッセージを無視するハンドラー
+@webhook_handler.add(MessageEvent, message=[StickerMessage, ImageMessage, VideoMessage, AudioMessage])
+def handle_other_message(event):
+    """
+    ユーザーがスタンプや画像などを送ってきた際に呼び出される。
+    現在はテキストメッセージのみを処理対象とするため、ここでは何もしない。
+    """
+    pass
+
+
 
 @app.route("/")
 def home():
