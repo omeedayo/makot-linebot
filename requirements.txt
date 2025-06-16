@@ -1,7 +1,2 @@
 flask==3.0.2
 line-bot-sdk==3.8.0
-google-generativeai==0.7.1
-requests==2.31.0
-google-auth==2.29.0
-# vercel-kv==0.1.5  ← 不要なので削除またはコメントアウト
-redis==5.0.4      # ← これを追加
