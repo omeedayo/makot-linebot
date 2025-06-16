@@ -202,7 +202,7 @@ def handle_message(event):
             line_bot_api.reply_message(event.reply_token, msg)
         except Exception as e:
             print(f"画像生成でエラーが発生: {e}")
-            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ごめん、画像生成でエラーでちゃった🥺\n理由: {e}"))
+            line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪い・・・のはおめぇのせいだよ\n理由: {e}"))
         return
 
     reply_text = chat_with_makot(user_text, user_id=src_id)
