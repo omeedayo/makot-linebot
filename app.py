@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (最終統合版：人間味＋画像生成)
+# app.py (最終統合版：人間味＋画像生成＋会話履歴の永続化)
 # ============================================================
 
 import os
@@ -23,6 +23,7 @@ from linebot.models import (
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
+from vercel_kv import kv  # ★ 追加: Vercel KVライブラリをインポート
 
 # ★★★ あなたの最新版 character_makot をインポート ★★★
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
@@ -49,13 +50,15 @@ text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # 最新モ
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
+# ★ 変更: インメモリの履歴を削除
 # ------------------------------------------------------------
 # In‑memory simple chat history
 # ------------------------------------------------------------
-chat_histories: dict[str, list[str]] = {}
+# chat_histories: dict[str, list[str]] = {} # ← この行は不要になったので削除
 
 # ------------------------------------------------------------
 # ★★★ あなたのコードから移植した「人間味」ロジック群 ★★★
+# (このセクションは変更なし)
 # ------------------------------------------------------------
 
 NICKNAMES = [MAKOT["name"]] + MAKOT["nicknames"]
@@ -142,13 +145,22 @@ def generate_image_with_rest_api(prompt: str) -> str:
     b64_image = response_data["predictions"][0]["bytesBase64Encoded"]; image_bytes = base64.b64decode(b64_image)
     return upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
 
+# ★ 変更: Vercel KVを使って会話履歴を永続化するロジックに全面的に書き換え
 # ------------------------------------------------------------
 # Main chat logic: ここで人間味ロジックを呼び出す
 # ------------------------------------------------------------
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    history = chat_histories.get(user_id, [])
+    # Vercel KVから履歴を取得するためのキーを生成
+    history_key = f"chat_history:{user_id}"
+    
+    # Vercel KVから会話履歴(リスト)を取得。なければ空のリストで初期化。
+    history: list[str] = kv.get(history_key) or []
+    
+    # 今回のユーザー入力を履歴に追加
     history.append(f"ユーザー: {user_input}")
-    context = "\n".join(history[-6:]) # 記憶力を6回に増強
+
+    # Geminiに渡すコンテキストを作成 (直近6往復=12メッセージ)
+    context = "\n".join(history[-12:])
 
     # トピックを判定して、最適なプロンプトを生成
     topic = guess_topic(user_input)
@@ -165,8 +177,13 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     pronoun = decide_pronoun(user_input)
     reply = inject_pronoun(reply, pronoun)
 
-    history.append(reply)
-    chat_histories[user_id] = history
+    # AIの返信を履歴に追加 (プロンプトの形式に合わせてプレフィックスを付与)
+    history.append(f"アシスタント: {reply}")
+    
+    # Vercel KVに更新した履歴を保存
+    # 無限に増えないように、最新50件のメッセージに絞って保存
+    kv.set(history_key, history[-50:])
+    
     return reply
 
 # ------------------------------------------------------------
