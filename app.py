@@ -17,20 +17,20 @@ from linebot.models import (
     TextMessage,
     TextSendMessage,
     ImageSendMessage,
-    JoinEvent,         # グループ参加イベント
-    LeaveEvent,        # グループ退出イベント
-    MemberJoinedEvent, # メンバー参加イベント
-    MemberLeftEvent,   # メンバー退出イベント
-    StickerMessage,    # スタンプ
-    VideoMessage,      # 動画
-    AudioMessage,      # 音声
+    JoinEvent,
+    LeaveEvent,
+    MemberJoinedEvent,
+    MemberLeftEvent,
+    StickerMessage,
+    VideoMessage,
+    AudioMessage,
 )
 
 # --- AI & Cloud Libraries ---
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
-import redis  # ★ 変更: vercel_kv の代わりに redis をインポート
+import redis
 
 # ★★★ あなたの最新版 character_makot をインポート ★★★
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
@@ -48,7 +48,7 @@ IMGUR_CLIENT_ID           = os.getenv("IMGUR_CLIENT_ID")
 GCP_PROJECT_ID            = os.getenv("GCP_PROJECT_ID")
 GCP_LOCATION              = os.getenv("GCP_LOCATION", "us-central1")
 GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
-REDIS_URL                 = os.getenv("REDIS_URL") # ★ 追加: RedisのURLを取得
+REDIS_URL                 = os.getenv("REDIS_URL")
 
 # --- Gemini client (text) ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
@@ -58,19 +58,19 @@ text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
-# ★ 変更: Redisクライアントを初期化
+# --- Redis Client ---
 if not REDIS_URL:
     raise ValueError("REDIS_URL 環境変数が設定されていません。")
 redis_client = redis.from_url(REDIS_URL)
 
 
 # ------------------------------------------------------------
-# ★★★ あなたのコードから移植した「人間味」ロジック群 ★★★ (変更なし)
+# 人間味ロジック群 (変更なし)
 # ------------------------------------------------------------
 NICKNAMES = [MAKOT["name"]] + MAKOT["nicknames"]
 def is_bot_mentioned(text: str) -> bool:
     return any(nick in text for nick in NICKNAMES)
-# ... (以降の人間味ロジックは変更なしのため省略) ...
+
 def guess_topic(text: str):
     hobby_keys = ["趣味", "休日", "ハマって", "コストコ", "ポケポケ"]
     work_keys  = ["仕事", "業務", "残業", "請求書", "統計"]
@@ -96,14 +96,13 @@ def post_process(reply: str, user_input: str) -> str:
         reply += " 🥺"
     if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
         reply += " しらんけど"
-    # 文章を2文までに制限
     reply_sentences = re.split(r'(。|！|？)', reply)
-    if len(reply_sentences) > 4: # 区切り文字もリストに含まれるため
+    if len(reply_sentences) > 4:
         reply = "".join(reply_sentences[:4])
     return reply
 
 # ------------------------------------------------------------
-# 画像生成関連の関数 (ここは完成形なので変更なし)
+# 画像生成関連の関数 (変更なし)
 # ------------------------------------------------------------
 def get_gcp_token() -> str:
     if not GCP_CREDENTIALS_JSON_STR: raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
@@ -116,6 +115,7 @@ def get_gcp_token() -> str:
         if not creds.token: raise ValueError("トークンの取得に失敗しました。")
         return creds.token
     except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
+
 def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
     if not client_id: raise Exception("Imgur Client IDが設定されていません。")
     url = "https://api.imgur.com/3/image"; headers = {"Authorization": f"Client-ID {client_id}"}
@@ -125,6 +125,7 @@ def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
         if data.get("success"): return data["data"]["link"]
         else: raise Exception(f"Imgurへのアップロードに失敗しました: {data.get('data', {}).get('error', 'Unknown error')}")
     except requests.exceptions.RequestException as e: raise Exception(f"Imgur APIへのリクエストに失敗しました: {e}")
+
 def translate_to_english(text: str) -> str:
     if not text: return "a cute girl"
     try:
@@ -133,6 +134,7 @@ def translate_to_english(text: str) -> str:
         translated_text = response.text.strip().replace('"', '')
         return translated_text
     except Exception as e: print(f"翻訳でエラーが発生: {e}"); return text
+
 def generate_image_with_rest_api(prompt: str) -> str:
     token = get_gcp_token()
     endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict")
@@ -151,42 +153,31 @@ def generate_image_with_rest_api(prompt: str) -> str:
     b64_image = response_data["predictions"][0]["bytesBase64Encoded"]; image_bytes = base64.b64decode(b64_image)
     return upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
 
-
 # ------------------------------------------------------------
-# Main chat logic: redis を使って永続化
+# Main chat logic (変更なし)
 # ------------------------------------------------------------
 def chat_with_makot(user_input: str, user_id: str) -> str:
     history_key = f"chat_history:{user_id}"
-
-    # ★ 変更: RedisからJSON文字列として履歴を取得
     history_json = redis_client.get(history_key)
-    # JSON文字列をPythonのリストに変換。データがなければ空のリストを作成。
     history: list[str] = json.loads(history_json) if history_json else []
-
     history.append(f"ユーザー: {user_input}")
     context = "\n".join(history[-12:])
     topic = guess_topic(user_input)
     system_prompt = build_system_prompt(context, topic=topic)
-
     try:
         response = text_model.generate_content(system_prompt)
         reply = response.text.strip()
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
-
     reply = post_process(reply, user_input)
     pronoun = decide_pronoun(user_input)
     reply = inject_pronoun(reply, pronoun)
-
     history.append(f"アシスタント: {reply}")
-
-    # ★ 変更: PythonリストをJSON文字列に変換してRedisに保存
     redis_client.set(history_key, json.dumps(history[-50:]))
-
     return reply
 
 # ------------------------------------------------------------
-# Flask endpoints (変更なし)
+# Flask endpoints and LINE Handlers
 # ------------------------------------------------------------
 @app.route("/line_webhook", methods=["POST"])
 def line_webhook():
@@ -195,13 +186,13 @@ def line_webhook():
     except InvalidSignatureError: return "Invalid signature", 400
     return "OK", 200
 
+# テキストメッセージを処理するハンドラー
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_message(event):
     src_type = event.source.type; user_text = event.message.text
     if src_type in ["group", "room"] and not is_bot_mentioned(user_text):
         return
     src_id = (event.source.user_id if src_type == "user" else event.source.group_id if src_type == "group" else event.source.room_id if src_type == "room" else "unknown")
-
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
             img_url = generate_image_with_rest_api(user_text)
@@ -211,31 +202,39 @@ def handle_message(event):
             print(f"画像生成でエラーが発生: {e}")
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text=f"ごめん、画像生成でエラーでちゃった🥺\n理由: {e}"))
         return
-
     reply_text = chat_with_makot(user_text, user_id=src_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
-# グループ関連のイベントをすべて処理するハンドラー
-@webhook_handler.add([JoinEvent, LeaveEvent, MemberJoinedEvent, MemberLeftEvent])
-def handle_group_events(event):
-    """
-    Bot自身の参加/退出イベントや、他のメンバーの参加/退出イベントが発生した際に呼び出される。
-    現在は特に何もする必要がないため、pass（何もしない）で正常終了させる。
-    これにより、LINEプラットフォーム側でエラーと判定されるのを防ぐ。
-    """
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+# ★★★ ここからが最終修正されたハンドラー群です ★★★
+# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
+
+# グループ参加イベント
+@webhook_handler.add(JoinEvent)
+def handle_join(event):
     pass
 
-# テキスト以外のメッセージを無視するハンドラー
+# グループ退出イベント
+@webhook_handler.add(LeaveEvent)
+def handle_leave(event):
+    pass
+
+# 他のメンバー参加イベント
+@webhook_handler.add(MemberJoinedEvent)
+def handle_member_joined(event):
+    pass
+
+# 他のメンバー退出イベント
+@webhook_handler.add(MemberLeftEvent)
+def handle_member_left(event):
+    pass
+
+# テキスト以外のメッセージ（スタンプ、画像、動画、音声）を処理するハンドラー
 @webhook_handler.add(MessageEvent, message=[StickerMessage, ImageMessage, VideoMessage, AudioMessage])
 def handle_other_message(event):
-    """
-    ユーザーがスタンプや画像などを送ってきた際に呼び出される。
-    現在はテキストメッセージのみを処理対象とするため、ここでは何もしない。
-    """
     pass
 
-
-
+# --- ルートURLへのアクセス ---
 @app.route("/")
 def home():
     return "まこT LINE Bot is running!"
