@@ -17,6 +17,7 @@ from linebot.models import (
     TextMessage,
     TextSendMessage,
     ImageSendMessage,
+    ImageMessage,      # ★★★★★ これを追加しました！ ★★★★★
     JoinEvent,
     LeaveEvent,
     MemberJoinedEvent,
@@ -205,31 +206,24 @@ def handle_message(event):
     reply_text = chat_with_makot(user_text, user_id=src_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-# ★★★ ここからが最終修正されたハンドラー群です ★★★
-# ★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★★
-
-# グループ参加イベント
+# --- グループ・ルーム関連のイベントハンドラー ---
 @webhook_handler.add(JoinEvent)
 def handle_join(event):
     pass
 
-# グループ退出イベント
 @webhook_handler.add(LeaveEvent)
 def handle_leave(event):
     pass
 
-# 他のメンバー参加イベント
 @webhook_handler.add(MemberJoinedEvent)
 def handle_member_joined(event):
     pass
 
-# 他のメンバー退出イベント
 @webhook_handler.add(MemberLeftEvent)
 def handle_member_left(event):
     pass
 
-# テキスト以外のメッセージ（スタンプ、画像、動画、音声）を処理するハンドラー
+# --- テキスト以外のメッセージを処理するハンドラー ---
 @webhook_handler.add(MessageEvent, message=[StickerMessage, ImageMessage, VideoMessage, AudioMessage])
 def handle_other_message(event):
     pass
