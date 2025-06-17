@@ -64,8 +64,7 @@ def sample_examples(k: int = 3) -> str:
     ex = random.sample(MAKOT["example_conversation"], k=k)
     return "\n".join(f"ユーザー: {e['user']}\nアシスタント: {e['assistant']}" for e in ex)
 
-
-# ★★★★★ ここから変更 ★★★★★
+# ★★★★★ ここからが修正箇所 ★★★★★
 # ---------------------------------------------------------------------------
 # prompt builder (長期記憶対応)
 # ---------------------------------------------------------------------------
@@ -77,7 +76,6 @@ def build_system_prompt(context: str, topic: Optional[str] = None, user_id: Opti
     ]
     
     # ★ 追加: 長期記憶が存在すればプロンプトの先頭に含める
-    # これにより、AIはユーザーとの過去の文脈を最優先で考慮するようになります。
     if long_term_memory:
         parts.insert(0, ("【あなたとユーザーの過去の記憶（最重要）】", long_term_memory))
 
@@ -96,4 +94,3 @@ def build_system_prompt(context: str, topic: Optional[str] = None, user_id: Opti
     prompt = "\n\n".join(f"{h}\n{v}" for h, v in parts)
     prompt += f"\n\n【会話履歴】\n{context}\n\n以上の設定と履歴を完璧に理解し、後輩女子『まこT』として、ユーザーの発言に1～2行で自然に返答してください："
     return textwrap.dedent(prompt)
-# ★★★★★ ここまで変更 ★★★★★
