@@ -126,19 +126,21 @@ def summarize_and_update_profile(user_id: str, history: list[str]):
 
     profile_key = f"profile:{user_id}"
 
-    # Geminiに要約を依頼
-    summary_prompt = textwrap.dedent(f"""
-        あなたはユーザーとの会話の要約担当です。
-        以下の会話から、ユーザーの個人的な情報（名前、好み、最近の出来事、ペット、悩み、計画など）を抽出し、
-        簡潔な箇条書きのメモとして1～2行で要約してください。
-        重要な情報が含まれていない場合は、必ず「特になし」とだけ出力してください。
-        ---
-        会話:
-        {recent_talk}
-        ---
-        要約:
-    """).strip()
+# summarize_and_update_profile 関数内
 
+    # Geminiに要約を依頼
+    # ★ 変更: textwrap.dedentを削除し、インデントを手動で調整
+    summary_prompt = f"""あなたはユーザーとの会話の要約担当です。
+以下の会話から、ユーザーの個人的な情報（名前、好み、最近の出来事、ペット、悩み、計画など）を抽出し、簡潔な箇条書きのメモとして1～2行で要約してください。
+重要な情報が含まれていない場合は、必ず「特になし」とだけ出力してください。
+---
+会話:
+{recent_talk}
+---
+要約:"""
+
+
+    
     try:
         summary_response = text_model.generate_content(summary_prompt)
         summary = summary_response.text.strip()
