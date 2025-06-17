@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (最終統合版：人間味＋画像生成＋会話履歴＋マルチモーダル対応)
+# app.py (最終完成版：長期記憶＋マルチモーダル対応)
 # ============================================================
 
 import os
@@ -8,6 +8,7 @@ import re
 import base64
 import json
 import requests
+from typing import Optional # ★ character_makot.py と合わせるために追加
 
 from flask import Flask, request
 from linebot import LineBotApi, WebhookHandler
@@ -17,8 +18,8 @@ from linebot.models import (
     TextMessage,
     TextSendMessage,
     ImageSendMessage,
-    ImageMessage,      # ★ 追加
-    StickerMessage,    # ★ 追加
+    ImageMessage,
+    StickerMessage,
 )
 
 # --- AI & Cloud Libraries ---
@@ -27,15 +28,14 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 import redis
 
-# ★★★ あなたの最新版 character_makot をインポート ★★★
+# ★★★ 修正した character_makot をインポート ★★★
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
 
 # ------------------------------------------------------------
-# Flask & LINE Bot setup
+# Flask & LINE Bot setup (変更なし)
 # ------------------------------------------------------------
 app = Flask(__name__)
-
-# --- 環境変数 ---
+# (環境変数、Gemini Client, LINE SDK, Redis Clientの初期化は変更なし)
 GEMINI_API_KEY            = os.getenv("GEMINI_API_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET       = os.getenv("LINE_CHANNEL_SECRET")
@@ -44,18 +44,13 @@ GCP_PROJECT_ID            = os.getenv("GCP_PROJECT_ID")
 GCP_LOCATION              = os.getenv("GCP_LOCATION", "us-central1")
 GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
-
-# --- Gemini client (text) ---
-# ★ モデル名はご指定の通り変更していません
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
 text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
-
-# --- LINE SDK & Redis client ---
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
-if not REDIS_URL:
-    raise ValueError("REDIS_URL 環境変数が設定されていません。")
+if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
 redis_client = redis.from_url(REDIS_URL)
+
 
 # ------------------------------------------------------------
 # 「人間味」ロジック群 & 画像生成関連 (変更なし)
@@ -63,6 +58,7 @@ redis_client = redis.from_url(REDIS_URL)
 # (このセクションの関数群は一切変更不要です)
 NICKNAMES = [MAKOT["name"]] + MAKOT["nicknames"]
 def is_bot_mentioned(text: str) -> bool: return any(nick in text for nick in NICKNAMES)
+# (以下、generate_image_with_rest_apiまで全て変更なし)
 def guess_topic(text: str):
     hobby_keys = ["趣味", "休日", "ハマって", "コストコ", "ポケポケ"]; work_keys  = ["仕事", "業務", "残業", "請求書", "統計"]
     if any(k in text for k in hobby_keys): return "hobby"
@@ -118,25 +114,110 @@ def generate_image_with_rest_api(prompt: str) -> str:
     b64_image = response_data["predictions"][0]["bytesBase64Encoded"]; image_bytes = base64.b64decode(b64_image)
     return upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
 
+# ★★★ 新規追加 ★★★
 # ------------------------------------------------------------
-# Main chat logic (変更なし)
+# 長期記憶の管理
+# ------------------------------------------------------------
+def summarize_and_update_profile(user_id: str, history: list[str]):
+    """直近の会話から重要な情報を要約し、長期記憶に追記する"""
+    # ユーザーとの最後のやり取りを要約対象にする
+    recent_talk = "\n".join(history[-2:]) # 最後の「ユーザー」と「アシスタント」の会話
+    if len(recent_talk) < 20: return # 短すぎる会話は要約しない
+
+    profile_key = f"profile:{user_id}"
+
+    # Geminiに要約を依頼
+    summary_prompt = textwrap.dedent(f"""
+        あなたはユーザーとの会話の要約担当です。
+        以下の会話から、ユーザーの個人的な情報（名前、好み、最近の出来事、ペット、悩み、計画など）を抽出し、
+        簡潔な箇条書きのメモとして1～2行で要約してください。
+        重要な情報が含まれていない場合は、必ず「特になし」とだけ出力してください。
+        ---
+        会話:
+        {recent_talk}
+        ---
+        要約:
+    """).strip()
+
+    try:
+        summary_response = text_model.generate_content(summary_prompt)
+        summary = summary_response.text.strip()
+
+        # 要約結果が「特になし」でなく、意味のある内容なら追記
+        if summary and "特になし" not in summary:
+            # 既存のプロフィールに改行を挟んで追記する
+            # ※ .append()は文字列にしか使えないため、一度読み込んで結合する
+            existing_profile = redis_client.get(profile_key)
+            if existing_profile:
+                new_profile = existing_profile.decode('utf-8') + "\n" + f"- {summary} ({random.choice(['最近','この前'])})"
+            else:
+                new_profile = f"- {summary} ({random.choice(['最近','この前'])})"
+            
+            # 長くなりすぎないように最新10件程度の情報に絞る
+            profile_lines = new_profile.split('\n')
+            if len(profile_lines) > 10:
+                new_profile = "\n".join(profile_lines[-10:])
+
+            redis_client.set(profile_key, new_profile)
+            print(f"[{user_id}] のプロフィールを更新しました: {summary}")
+
+    except Exception as e:
+        print(f"要約処理でエラー: {e}")
+
+# ★ 変更: chat_with_makot を大幅に強化
+# ------------------------------------------------------------
+# Main chat logic: 長期記憶を搭載
 # ------------------------------------------------------------
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    history_key = f"chat_history:{user_id}"; history_json = redis_client.get(history_key)
+    # 1. 履歴とプロフィールのキーを定義
+    history_key = f"chat_history:{user_id}"
+    profile_key = f"profile:{user_id}"
+
+    # 2. 短期記憶（会話履歴）をRedisから取得
+    history_json = redis_client.get(history_key)
     history: list[str] = json.loads(history_json) if history_json else []
-    history.append(f"ユーザー: {user_input}"); context = "\n".join(history[-12:])
-    topic = guess_topic(user_input); system_prompt = build_system_prompt(context, topic=topic)
+
+    # 3. ★長期記憶（プロフィール）をRedisから取得
+    long_term_memory_bytes = redis_client.get(profile_key)
+    long_term_memory = long_term_memory_bytes.decode('utf-8') if long_term_memory_bytes else None
+
+    # 4. 今回のユーザー入力を履歴に追加
+    history.append(f"ユーザー: {user_input}")
+    context = "\n".join(history[-12:]) # プロンプトに含めるのは直近の履歴
+
+    # 5. 長期記憶を含めてシステムプロンプトを生成
+    topic = guess_topic(user_input)
+    system_prompt = build_system_prompt(
+        context=context,
+        topic=topic,
+        user_id=user_id,
+        long_term_memory=long_term_memory
+    )
+    
+    # 6. AIに応答を生成させる
     try:
         response = text_model.generate_content(system_prompt)
         reply = response.text.strip()
     except Exception as e:
         reply = f"エラーが発生しました: {e}"
-    reply = post_process(reply, user_input); pronoun = decide_pronoun(user_input); reply = inject_pronoun(reply, pronoun)
-    history.append(f"アシスタント: {reply}"); redis_client.set(history_key, json.dumps(history[-50:]))
+
+    # 7. 応答を加工し、履歴に追加
+    reply = post_process(reply, user_input)
+    pronoun = decide_pronoun(user_input)
+    reply = inject_pronoun(reply, pronoun)
+    history.append(f"アシスタント: {reply}")
+
+    # 8. 短期記憶をRedisに保存（最新50件）
+    redis_client.set(history_key, json.dumps(history[-50:]))
+
+    # 9. ★長期記憶の更新処理を呼び出す
+    summarize_and_update_profile(user_id, history)
+
     return reply
 
+
 # ------------------------------------------------------------
-# Flask endpoints (★ここから構成を変更)
+# Flask endpoints (変更なし)
 # ------------------------------------------------------------
 @app.route("/line_webhook", methods=["POST"])
 def line_webhook():
@@ -145,14 +226,13 @@ def line_webhook():
     except InvalidSignatureError: return "Invalid signature", 400
     return "OK", 200
 
-# ★ 1. テキストメッセージ専用ハンドラ
+# ★ テキストメッセージ専用ハンドラ (ここは変更なし)
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     src_type = event.source.type; user_text = event.message.text
     if src_type in ["group", "room"] and not is_bot_mentioned(user_text): return
     src_id = (event.source.user_id if src_type == "user" else event.source.group_id if src_type == "group" else event.source.room_id if src_type == "room" else "unknown")
 
-    # ★ 画像生成の応答を改善
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="おっけーです！ちょっと待っててくださいね…🥰"))
@@ -164,47 +244,42 @@ def handle_text_message(event):
             line_bot_api.push_message(src_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪い・・・のはおめぇのせいだよ\n理由: {e}"))
         return
 
+    # chat_with_makotの呼び出しは変更なしでOK
     reply_text = chat_with_makot(user_text, user_id=src_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
-# ★ 2.【新規】画像メッセージ専用ハンドラ
+# ★ 画像メッセージ専用ハンドラ (変更なし)
 @webhook_handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
+    # ... (この関数は変更なし)
     try:
         message_content = line_bot_api.get_message_content(event.message.id)
         image_bytes = message_content.content
-
         makot_prompt = "あなたは後輩女子の『まこT』です。ユーザーから送られてきたこの画像を見て、最高のリアクションを1～2文で返してください！食べ物なら「おいしそう！」、動物なら「かわいい！」など、見たままの感情をテンション高めに表現してください。"
-        
-        # 既存のtext_modelで画像認識を試行
         response = text_model.generate_content([makot_prompt, {"mime_type": "image/jpeg", "data": image_bytes}])
         reply_text = response.text.strip()
-        
-        reply_text = post_process(reply_text, "テンション上がる") # まこTらしい表現に加工
+        reply_text = post_process(reply_text, "テンション上がる")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-
     except Exception as e:
         print(f"画像認識でエラーが発生: {e}")
-        # モデルが画像非対応の場合などを考慮したエラーメッセージ
         if "support image" in str(e).lower():
              reply_text = "ごめんなさい、今ちょっと目が悪くて画像が見れないみたいです…🥺 また今度見せてください！"
         else:
              reply_text = "ごめんなさい、画像がうまく見れなかったです…🥺"
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
-# ★ 3.【新規】スタンプメッセージ専用ハンドラ
+# ★ スタンプメッセージ専用ハンドラ (変更なし)
 @webhook_handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker_message(event):
+    # ... (この関数は変更なし)
     sticker_map = {
         "11537": {"52002734": "ありがとうございます！うれしいです🥰", "52002748": "おつかれさまです！🙇‍♀️"},
         "11538": {"51626494": "ひえっ…！なにかありましたか！？🥺", "51626501": "ふぁーーーーーーーーーーーｗｗｗｗｗｗｗ"}
     }
     package_id = event.message.package_id; sticker_id = event.message.sticker_id
     reply_text = sticker_map.get(package_id, {}).get(sticker_id)
-
     if not reply_text:
         reply_text = random.choice(["スタンプありがとうございます！🥰", "そのスタンプかわいいですね！", "お、いいスタンプ！私もほしいです！"])
-    
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
 @app.route("/")
