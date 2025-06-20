@@ -126,7 +126,7 @@ def generate_image_with_rest_api(prompt: str) -> str:
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
     trigger_words = ["画像", "イラスト", "描いて", "絵を"]; clean_prompt = prompt
     for word in trigger_words: clean_prompt = clean_prompt.replace(word, "")
-    clean_prompt = clean_prompt.strip(); english_prompt = translate_to_english(clean_prompt); final_prompt = f"anime style illustration, masterpiece, best quality, {english_prompt}"
+    clean_prompt = clean_prompt.strip(); english_prompt = translate_to_english(clean_prompt); final_prompt = f"masterpiece, best quality, {english_prompt}"
     data = {"instances": [{"prompt": final_prompt}], "parameters": {"sampleCount": 1, "aspectRatio": "1:1", "negativePrompt": "low quality, bad hands, text, watermark, signature"}}
     response = requests.post(endpoint_url, headers=headers, json=data); response.raise_for_status(); response_data = response.json()
     if "predictions" not in response_data or not response_data["predictions"]:
