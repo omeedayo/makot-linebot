@@ -104,8 +104,11 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
     except Exception as e:
         print(f"記憶の保存処理でエラー: {e}")
 
+# (ファイル冒頭のimportや初期化は変更なしなので省略)
+# ...
+
 # ------------------------------------------------------------
-# Q&Aモードと通常会話モードの処理
+# ★★★ Q&Aモードと通常会話モードの処理（改善版）★★★
 # ------------------------------------------------------------
 QA_SYSTEM_PROMPT = textwrap.dedent("""
     あなたは、後輩女子『まこT』として、提供された参考情報に【基づいてのみ】ユーザーの質問に回答するアシスタントです。
@@ -126,46 +129,89 @@ QA_SYSTEM_PROMPT = textwrap.dedent("""
 """)
 
 def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
-    """質問をベクトル化する（質問検索用）"""
+    # (この関数は変更なし)
     try:
-        result = genai.embed_content(
-            model=embedding_model,
-            content=text,
-            task_type=task_type
-        )
+        result = genai.embed_content(model=embedding_model, content=text, task_type=task_type)
         return result['embedding']
     except Exception as e:
         print(f"QAベクトル化エラー: {e}")
         return []
 
+# ★★★ クエリ拡張用の関数を追加 ★★★
+def expand_query(question: str) -> list[str]:
+    """LLMを使って質問を複数の表現に拡張する"""
+    prompt = textwrap.dedent(f"""
+        ユーザーの質問を、ベクトル検索でよりヒットしやすくなるように、異なる視点から3つの類義質問や検索キーワードに書き換えてください。
+        元の質問も必ず含めてください。箇条書き（ハイフン区切り）で、説明は不要です。
+        
+        例1:
+        質問: 料金の支払いについて教えて
+        書き換え:
+        - 料金の支払いについて教えて
+        - 料金の算定および支払い方法
+        - 支払期日を過ぎた場合の延滞利息
+        
+        例2:
+        質問: FRT要件って何ですか？
+        書き換え:
+        - FRT要件って何ですか？
+        - 事故時運転継続要件の定義
+        - FRT要件を満たすための条件
+        
+        質問: {question}
+        書き換え:
+    """)
+    try:
+        response = text_model.generate_content(prompt)
+        # 箇条書きをパースしてリストにする
+        queries = [line.strip().lstrip('- ') for line in response.text.strip().split('\n') if line.strip()]
+        return list(set(queries)) # 重複を削除
+    except Exception as e:
+        print(f"クエリ拡張エラー: {e}")
+        return [question] # 失敗した場合は元の質問だけを返す
+
+
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    """まこTとのチャット処理。Q&Aモードと通常会話モードを自動で切り替える"""
     QA_TRIGGERS = ["教えて", "説明して", "規定", "ルール", "方法", "って何", "とは", "について", "の条件"]
     is_qa_mode = any(trigger in user_input for trigger in QA_TRIGGERS)
 
     if is_qa_mode:
-        # --- Q&Aモード ---
         print(f"[{user_id}] Q&Aモードで実行します。")
         try:
-            query_vector = get_qa_embedding(user_input)
-            if not query_vector:
-                return "ごめんなさい、質問をうまく理解できませんでした…。"
+            # ★★★ クエリ拡張を実行 ★★★
+            expanded_queries = expand_query(user_input)
+            print(f"  [クエリ拡張] 元の質問: '{user_input}' -> 拡張後: {expanded_queries}")
 
-            query_response = pinecone_index.query(
-                vector=query_vector,
-                top_k=5,
-                namespace="company-docs",
-                include_metadata=True
-            )
+            # 拡張された各クエリでベクトル検索を行い、結果を統合
+            all_matches = {}
+            for query in expanded_queries:
+                query_vector = get_qa_embedding(query)
+                if not query_vector: continue
+
+                query_response = pinecone_index.query(
+                    vector=query_vector,
+                    top_k=3, # 各クエリで3件取得
+                    namespace="company-docs",
+                    include_metadata=True
+                )
+                for match in query_response['matches']:
+                    # IDで重複を管理し、最も高いスコアを保持
+                    if match.id not in all_matches or match.score > all_matches[match.id].score:
+                        all_matches[match.id] = match
+
+            # スコアの高い順にソート
+            sorted_matches = sorted(all_matches.values(), key=lambda x: x.score, reverse=True)
 
             context_chunks = []
             sources = set()
-
-            for match in query_response['matches']:
-                print(f"  [検索結果] Score: {match['score']:.4f}, Source: {match['metadata']['source']}, Text: {match['metadata']['text'][:50]}...")
-                if match['score'] > 0.6:
-                     context_chunks.append(match['metadata']['text'])
-                     sources.add(match['metadata']['source'])
+            
+            print("\n--- 統合後の検索結果 ---")
+            for match in sorted_matches[:5]: # 上位5件を利用
+                print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Title: {match.metadata.get('title', 'N/A')}")
+                if match.score > 0.60:  # 閾値は少し低めでもOK
+                     # メタデータのタイトル情報もコンテキストに含める
+                     context_chunks.append(f"【出典: {match.metadata['source']} / 見出し: {match.metadata.get('title', 'N/A')}】\n{match.metadata['text']}")
+                     sources.add(match.metadata['source'])
 
             if not context_chunks:
                 return "うーん、その情報は見当たらないですね…！ごめんなさい🥺"
@@ -176,10 +222,10 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
             response = text_model.generate_content(prompt)
             reply = response.text.strip()
-
+            
             if "ごめんなさい" not in reply and "参考:" not in reply:
                 reply += f" {source_str}"
-            
+
             return reply
 
         except Exception as e:
@@ -187,8 +233,9 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             return "ごめんなさい、なんだかシステムが不調みたいです…。もう一度試してみてください！"
 
     else:
-        # --- 通常会話モード ---
+        # --- 通常会話モード (変更なし) ---
         print(f"[{user_id}] 通常会話モードで実行します。")
+        # ... (以前のコードと同じなので省略) ...
         history_key = f"chat_history:{user_id}"
         history_json = redis_client.get(history_key)
         history: list[str] = json.loads(history_json) if history_json else []
@@ -233,6 +280,8 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
         summarize_and_store_memory(user_id, history)
 
         return reply
+# (ファイル末尾のWebhookハンドラ等は変更なしなので省略)
+# ...
 
 # ------------------------------------------------------------
 # ユーティリティ & Webhookハンドラ
