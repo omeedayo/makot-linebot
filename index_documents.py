@@ -14,6 +14,7 @@ load_dotenv('.env.development.local')
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+
 if not all([GEMINI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME]):
     raise ValueError("必要な環境変数が設定されていません。")
 
@@ -36,68 +37,72 @@ def get_embedding(text: str, task_type="RETRIEVAL_DOCUMENT") -> list[float]:
         return []
 
 def preprocess_text(text: str) -> str:
-    """OCRテキストからノイズを除去し、整形する"""
-    # ページ番号や独立した数字の行を削除
-    text = re.sub(r'^\s*-\s*\d+\s*-\s*$', '', text, flags=re.MULTILINE)
+    """OCRテキストからノイズを除去し、整形する関数"""
+    # ヘッダー/フッターによくあるパターンを削除 (例: '－ 12 －')
+    text = re.sub(r'－\s*\d+\s*－', '', text)
+    # ページ番号のみの行を削除
     text = re.sub(r'^\s*\d+\s*$', '', text, flags=re.MULTILINE)
-    # 文中の不要な改行をスペースに置換（ただし、箇条書きの改行は保持したいので工夫が必要）
-    # ここでは単純に改行をスペースに置換
-    text = re.sub(r'\n', ' ', text)
+    # 文中の不要な改行をスペースに置換
+    text = re.sub(r'(?<!\n)\n(?!\n)', ' ', text)
     # 連続するスペースを一つにまとめる
     text = re.sub(r'\s+', ' ', text)
-    return text
+    return text.strip()
 
 def load_and_chunk_documents(directory: str) -> list[dict]:
-    """文書を読み込み、章・条・項を考慮してチャンクに分割する"""
+    """文書を読み込み、章・条・項を考慮してチャンクに分割する賢い関数"""
     all_chunks = []
     print(f"'{directory}'フォルダ内のドキュメントを読み込みます...")
+    if not os.path.exists(directory):
+        print(f"エラー: '{directory}' フォルダが見つかりません。")
+        return []
+
     for filename in os.listdir(directory):
         path = os.path.join(directory, filename)
         if not os.path.isfile(path) or not filename.endswith(".pdf"):
             continue
 
-        print(f"  - ファイル '{filename}' を処理中...")
+        print(f"\n--- ファイル '{filename}' を処理中... ---")
         full_text = ""
-        with fitz.open(path) as doc:
-            full_text = "".join(page.get_text("text", sort=True) for page in doc)
+        try:
+            with fitz.open(path) as doc:
+                # sort=Trueで読み取り順序を改善
+                full_text = "".join(page.get_text("text", sort=True) for page in doc)
+        except Exception as e:
+            print(f"  PDF読み込みエラー: {e}")
+            continue
 
-        # 章、条、附則などの見出しで分割
-        # この正規表現は文書の構造に合わせて調整が必要
+        # ★★★ 文書構造を意識した分割ロジック ★★★
+        # 「第X章」「第Y条」「附則」「別表」などで文書を大きなセクションに分割
+        # この正規表現は、文書のパターンに合わせて調整することが重要
         sections = re.split(r'(第\s*[一二三四五六七八九十百]+章|第\s*\d+章|第\s*[一二三四五六七八九十百]+条|第\s*\d+条|附\s*則|別\s*表\s*\d+)', full_text)
         
         current_title = "序文"
-        content_buffer = ""
-
-        for section in sections:
-            section = section.strip()
-            if not section: continue
-
-            # 見出しパターンにマッチした場合
-            if re.match(r'(第\s*[一二三四五六七八九十百]+章|第\s*\d+章|第\s*[一二三四五六七八九十百]+条|第\s*\d+条|附\s*則|別\s*表\s*\d+)', section):
-                # 前のセクションのバッファがあればチャンクとして処理
-                if content_buffer:
-                    preprocessed_content = preprocess_text(content_buffer)
-                    if len(preprocessed_content) > 20: # 短すぎる内容はスキップ
-                        all_chunks.append({
-                            "text": f"{current_title} - {preprocessed_content}", # タイトル情報をテキストに含める
-                            "source": filename,
-                            "title": current_title
-                        })
-                # 新しいタイトルをセットしてバッファをリセット
-                current_title = section
-                content_buffer = ""
-            else:
-                # 見出しでない場合は内容としてバッファに追加
-                content_buffer += section
         
-        # 最後のセクションのバッファを処理
-        if content_buffer:
-            preprocessed_content = preprocess_text(content_buffer)
-            if len(preprocessed_content) > 20:
+        # 分割されたセクションを交互に処理 (区切り文字と内容が交互に来る)
+        for i in range(1, len(sections), 2):
+            title = sections[i].strip()
+            content = sections[i+1].strip()
+            
+            # 前処理でノイズを除去
+            cleaned_content = preprocess_text(content)
+            
+            if len(cleaned_content) < 30: # 短すぎる内容はスキップ
+                continue
+
+            # チャンクが長すぎる場合はさらに分割
+            if len(cleaned_content) > CHUNK_SIZE:
+                for j in range(0, len(cleaned_content), CHUNK_SIZE):
+                    sub_chunk = cleaned_content[j:j + CHUNK_SIZE]
+                    all_chunks.append({
+                        "text": sub_chunk,
+                        "source": filename,
+                        "title": title
+                    })
+            else:
                 all_chunks.append({
-                    "text": f"{current_title} - {preprocessed_content}",
+                    "text": cleaned_content,
                     "source": filename,
-                    "title": current_title
+                    "title": title
                 })
 
     return all_chunks
@@ -115,7 +120,6 @@ def main():
         print("処理対象のドキュメントが見つかりませんでした。")
         return
 
-    # 確認用にチャンクをファイルに出力
     with open("chunks_output.txt", "w", encoding="utf-8") as f:
         f.write(f"合計チャンク数: {len(chunks)}\n\n")
         for i, chunk in enumerate(chunks):
@@ -135,8 +139,12 @@ def main():
         batch = chunks[i:i + batch_size]
         vectors_to_upsert = []
         for chunk in batch:
-            vector = get_embedding(chunk['text'])
+            # 検索時の関連性を高めるため、タイトル情報もテキストに含めてベクトル化
+            text_for_embedding = f"文書: {chunk['source']}, 見出し: {chunk['title']}\n内容: {chunk['text']}"
+            vector = get_embedding(text_for_embedding)
             if not vector: continue
+            
+            # メタデータには元のテキストと情報を保存
             vectors_to_upsert.append({
                 "id": str(uuid.uuid4()),
                 "values": vector,

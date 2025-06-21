@@ -299,12 +299,26 @@ def decide_pronoun(user_text: str) -> str:
 def inject_pronoun(reply: str, pronoun: str) -> str: return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
 def post_process(reply: str, user_input: str) -> str:
-    high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"]); low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
+    # 1. ユーザーの入力に応じて感情表現を追加する
+    high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"])
+    low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
     if high: reply = apply_expression_style(reply, mood="high")
     elif low: reply += " 🥺"
-    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4: reply += " しらんけど"
+
+    # 2. Markdown記法や不要な記号を除去する
+    reply = reply.replace('**', '')
+    reply = reply.replace('*', '')
+    reply = reply.replace('`', '')
+
+    # 3. AIの返信が曖昧な表現を含んでいる場合に、確率で「しらんけど」を付ける
+    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
+        reply += " しらんけど"
+    
+    # 4. 返信が長くなりすぎないように、一定の文の長さでカットする
     reply_sentences = re.split(r'(。|！|？)', reply)
-    if len(reply_sentences) > 4: reply = "".join(reply_sentences[:4])
+    if len(reply_sentences) > 4: # 文が多すぎる場合
+        reply = "".join(reply_sentences[:4]) # 最初の数文に絞る
+    
     return reply
 def get_gcp_token() -> str:
     if gcp_token_cache["token"] and time.time() < gcp_token_cache["expires_at"]: return gcp_token_cache["token"]
