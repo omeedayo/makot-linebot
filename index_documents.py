@@ -6,6 +6,7 @@ from tqdm import tqdm
 import uuid
 import time
 from dotenv import load_dotenv
+import re
 
 # .envファイルから環境変数を読み込む
 load_dotenv('.env.development.local')
@@ -51,7 +52,7 @@ def get_embedding(text: str, task_type="RETRIEVAL_DOCUMENT") -> list[float]:
         return []
 
 def load_and_chunk_documents(directory: str) -> list[dict]:
-    """ディレクトリからドキュメントを読み込み、チャンクに分割する"""
+    """ディレクトリからドキュメントを読み込み、段落ベースでチャンクに分割する"""
     chunks = []
     print(f"'{directory}'フォルダ内のドキュメントを読み込みます...")
     if not os.path.exists(directory):
@@ -68,23 +69,38 @@ def load_and_chunk_documents(directory: str) -> list[dict]:
             if filename.endswith(".pdf"):
                 with fitz.open(path) as doc:
                     text = "".join(page.get_text() for page in doc).strip()
-            elif filename.endswith(".txt"):
-                with open(path, "r", encoding="utf-8") as f:
-                    text = f.read().strip()
-            else:
-                continue
-
+            # ... (他のファイル形式の処理は省略) ...
+            
             if not text:
-                print(f"警告: '{filename}' からテキストを抽出できませんでした。")
                 continue
 
-            # テキストをチャンクに分割
-            for i in range(0, len(text), CHUNK_SIZE - CHUNK_OVERLAP):
-                chunk_text = text[i:i + CHUNK_SIZE]
-                chunks.append({
-                    "text": chunk_text,
-                    "source": filename
-                })
+            # ★★★ ここからが改善点 ★★★
+            # まず、空行（2つ以上の改行）で大きな塊に分割
+            paragraphs = re.split(r'\n\s*\n', text)
+            
+            for para in paragraphs:
+                para = para.strip()
+                if not para:
+                    continue
+                
+                # 段落が長すぎる場合は、さらに句点「。」で分割
+                if len(para) > CHUNK_SIZE:
+                    sentences = re.split(r'([。])', para) # 句点を保持して分割
+                    
+                    current_chunk = ""
+                    for i in range(0, len(sentences), 2):
+                        sentence_part = "".join(sentences[i:i+2])
+                        if len(current_chunk) + len(sentence_part) > CHUNK_SIZE:
+                            chunks.append({"text": current_chunk, "source": filename})
+                            current_chunk = sentence_part
+                        else:
+                            current_chunk += sentence_part
+                    if current_chunk:
+                         chunks.append({"text": current_chunk, "source": filename})
+                else:
+                    chunks.append({"text": para, "source": filename})
+            # ★★★ ここまでが改善点 ★★★
+
         except Exception as e:
             print(f"エラー: '{filename}' の処理中に問題が発生しました: {e}")
 
