@@ -174,7 +174,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             for match in query_response['matches']:
              # ★★★ ここにDEBUG用のprint文を追加 ★★★
                 print(f"  [DEBUG] Score: {match['score']:.4f}, Text: {match['metadata']['text'][:50]}...")
-                if match['score'] > 0.7: # 類似度の閾値
+                if match['score'] > 0.6: # 類似度の閾値
                      context_chunks.append(match['metadata']['text'])
                      sources.add(match['metadata']['source'])
             
