@@ -51,7 +51,7 @@ PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
 
 # 各種クライアントの初期化
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-1.5-flash") # モデルを更新
+text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # モデルを更新
 embedding_model = "models/text-embedding-004"
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
