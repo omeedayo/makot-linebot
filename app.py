@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (本格RAG対応版)
+# app.py (ステップ3: 会社資料Q&A対応版)
 # ============================================================
 
 import os
@@ -10,7 +10,7 @@ import json
 import requests
 import time
 import textwrap
-import uuid       # ★ 追加: 記憶に一意のIDを付与するため
+import uuid
 from typing import Optional
 
 from flask import Flask, request
@@ -26,7 +26,7 @@ import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 import redis
-import pinecone   # ★ 追加: ベクトルDBライブラリ
+import pinecone
 
 # --- 他のPythonファイルからインポート ---
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
@@ -44,20 +44,19 @@ GCP_PROJECT_ID            = os.getenv("GCP_PROJECT_ID")
 GCP_LOCATION              = os.getenv("GCP_LOCATION", "us-central1")
 GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
-PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")      # ★ 追加
-PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")  # ★ 追加
+PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
+PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
 
 # 各種クライアントの初期化
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
-embedding_model = "models/text-embedding-004" # ★ 追加: ベクトル化用モデル
+text_model = genai.GenerativeModel("gemini-1.5-flash-preview-0514") # モデルを更新 (もし1.5 Flashが利用可能なら)
+embedding_model = "models/text-embedding-004"
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
-redis_client = redis.from_url(REDIS_URL) # 短期記憶(会話履歴)用として引き続き利用
+redis_client = redis.from_url(REDIS_URL)
 gcp_token_cache = {"token": None, "expires_at": 0}
 
-# ★ 追加: Pineconeクライアントの初期化
 if not PINECONE_API_KEY or not PINECONE_INDEX_NAME:
     raise ValueError("Pineconeの環境変数(API_KEY, INDEX_NAME)が設定されていません。")
 pc = pinecone.Pinecone(api_key=PINECONE_API_KEY)
@@ -65,11 +64,12 @@ pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 
 
 # ------------------------------------------------------------
-# ★★★ 新設: ベクトル化 & RAG関連関数 ★★★
+# ベクトル化 & RAG関連関数
 # ------------------------------------------------------------
 def get_embedding(text: str) -> list[float]:
-    """テキストをベクトル（AIが意味を理解できる数値配列）に変換する"""
+    """テキストをベクトルに変換する（汎用）"""
     try:
+        # task_typeを指定しない汎用的なベクトル化
         result = genai.embed_content(model=embedding_model, content=text)
         return result['embedding']
     except Exception as e:
@@ -94,15 +94,13 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
         summary = summary_response.text.strip()
 
         if summary and "特になし" not in summary:
-            # 1. 要約文をベクトル化
             vector = get_embedding(summary)
             if not vector: return
 
-            # 2. 一意のIDと、検索用のメタデータを作成
             memory_id = str(uuid.uuid4())
             metadata = { "user_id": user_id, "text": summary, "created_at": time.time() }
             
-            # 3. Pineconeにベクトルとメタデータを保存
+            # 個人記憶はnamespaceを指定せずに保存 (もしくは別のnamespaceを指定)
             pinecone_index.upsert(vectors=[(memory_id, vector, metadata)])
             print(f"[{user_id}] の新しい記憶をベクトルDBに保存しました: {summary}")
 
@@ -110,66 +108,156 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
         print(f"記憶の保存処理でエラー: {e}")
 
 # ------------------------------------------------------------
-# ★★★ メインロジックをRAG対応に刷新 ★★★
+# ★★★ ここからがステップ3の変更箇所 ★★★
 # ------------------------------------------------------------
-def chat_with_makot(user_input: str, user_id: str) -> str:
-    # 1. 短期記憶(会話履歴)をRedisから取得
-    history_key = f"chat_history:{user_id}"
-    history_json = redis_client.get(history_key)
-    history: list[str] = json.loads(history_json) if history_json else []
 
-    # 2. ★ RAG検索: ユーザーの今の発言に最も関連する長期記憶をPineconeから検索
-    long_term_memory = None
+# ★ Q&A用の新しいプロンプトテンプレート
+QA_SYSTEM_PROMPT = textwrap.dedent("""
+    あなたは、後輩女子『まこT』として、提供された参考情報に【基づいてのみ】ユーザーの質問に回答するアシスタントです。
+    あなたの役割は、参考情報の内容を分かりやすく、親しみやすい口調で要約して伝えることです。
+
+    【重要ルール】
+    - 必ず参考情報に含まれる事実だけを使って回答してください。
+    - 参考情報に答えがない場合や、関連性が低い場合は、絶対に推測で答えてはいけません。代わりに「うーん、その情報は見当たらないですね…！ごめんなさい🥺」と正直に回答してください。
+    - 回答の最後に出典（source）を `(参考: ファイル名)` の形で付け加えてください。
+
+    【参考情報】
+    {context}
+
+    【ユーザーの質問】
+    {question}
+
+    以上のルールを厳格に守り、『まこT』として回答してください：
+""")
+
+# ★ Q&A用のベクトル化関数
+def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
+    """質問をベクトル化する"""
     try:
-        input_vector = get_embedding(user_input)
-        if input_vector:
-            # 同じユーザーの記憶の中から、意味が近いものを最大3つ検索
+        # 質問のベクトル化時は task_type を RETRIEVAL_QUERY にするのが推奨
+        result = genai.embed_content(
+            model=embedding_model,
+            content=text,
+            task_type=task_type
+        )
+        return result['embedding']
+    except Exception as e:
+        print(f"ベクトル化でエラー: {e}")
+        return []
+
+# ★ chat_with_makot関数をQ&Aモードと通常会話モードの分岐を持つように大幅更新
+def chat_with_makot(user_input: str, user_id: str) -> str:
+    # --- Q&Aモードの判定 ---
+    # 「〜について教えて」「〜とは？」や、文末が「？」で終わる場合にQ&Aモードと判断
+    is_qa_mode = "について教えて" in user_input or "とは？" in user_input or user_input.endswith("？") or user_input.endswith("?")
+
+    if is_qa_mode:
+        # --- ★ Q&Aモードの処理 ---
+        print(f"[{user_id}] Q&Aモードで実行します。")
+        try:
+            # 1. 質問をベクトル化
+            query_vector = get_qa_embedding(user_input)
+            if not query_vector:
+                return "ごめんなさい、質問をうまく理解できませんでした…。"
+
+            # 2. Pineconeの会社資料名前空間を検索
             query_response = pinecone_index.query(
-                vector=input_vector,
+                vector=query_vector,
                 top_k=3,
-                filter={"user_id": user_id},
+                namespace="company-docs", # ★ 会社資料の名前空間を指定
                 include_metadata=True
             )
-            # 見つかった記憶のテキスト部分を取り出す
-            relevant_memories = [match['metadata']['text'] for match in query_response['matches']]
-            if relevant_memories:
-                long_term_memory = "\n".join(f"- {mem}" for mem in relevant_memories)
-                print(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
 
-    except Exception as e:
-        print(f"記憶の検索でエラー: {e}")
+            # 3. 検索結果を整形してコンテキストを作成
+            context_chunks = []
+            sources = set()
+            # 類似度が低い結果を除外する（閾値は調整が必要）
+            for match in query_response['matches']:
+                if match['score'] > 0.75: # 類似度の閾値
+                    context_chunks.append(match['metadata']['text'])
+                    sources.add(match['metadata']['source'])
+            
+            if not context_chunks:
+                return "うーん、その情報は見当たらないですね…！ごめんなさい🥺"
 
-    # 3. 会話履歴とプロンプトの生成
-    history.append(f"ユーザー: {user_input}")
-    context = "\n".join(history[-12:])
-    topic = guess_topic(user_input)
-    system_prompt = build_system_prompt(
-        context=context,
-        topic=topic,
-        user_id=user_id,
-        long_term_memory=long_term_memory # ★ 検索した関連記憶だけをカンペとして渡す
-    )
-    
-    # 4. AIによる応答生成
-    try:
-        response = text_model.generate_content(system_prompt)
-        reply = response.text.strip()
-    except Exception as e:
-        reply = f"エラーが発生しました: {e}"
+            context_str = "\n---\n".join(context_chunks)
+            source_str = f"(参考: {', '.join(sources)})"
+            
+            # 4. Q&A専用プロンプトでAIに応答を生成させる
+            prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
+            response = text_model.generate_content(prompt)
+            reply = response.text.strip()
+            
+            # 出典情報を付与 (AIがルールを破って出典を付けなかった場合も考慮)
+            if "ごめんなさい" not in reply and "参考:" not in reply:
+                reply += f" {source_str}"
+            
+            return reply
 
-    # 5. 応答の加工と保存
-    reply = post_process(reply, user_input)
-    pronoun = decide_pronoun(user_input)
-    reply = inject_pronoun(reply, pronoun)
-    history.append(f"アシスタント: {reply}")
+        except Exception as e:
+            print(f"Q&A処理でエラー: {e}")
+            return "ごめんなさい、なんだかシステムが不調みたいです…。"
 
-    # 6. 短期記憶をRedisに保存
-    redis_client.set(history_key, json.dumps(history[-50:]))
+    else:
+        # --- ★ 通常会話モードの処理 (これまでの個人記憶RAG) ---
+        print(f"[{user_id}] 通常会話モードで実行します。")
+        # 1. 短期記憶(会話履歴)をRedisから取得
+        history_key = f"chat_history:{user_id}"
+        history_json = redis_client.get(history_key)
+        history: list[str] = json.loads(history_json) if history_json else []
 
-    # 7. ★ 新しい長期記憶の保存処理を呼び出す
-    summarize_and_store_memory(user_id, history)
+        # 2. RAG検索: ユーザーの今の発言に最も関連する長期記憶をPineconeから検索
+        long_term_memory = None
+        try:
+            input_vector = get_embedding(user_input)
+            if input_vector:
+                # 同じユーザーの記憶の中から、意味が近いものを最大3つ検索
+                # (namespaceを指定せず、メタデータのuser_idでフィルタリング)
+                query_response = pinecone_index.query(
+                    vector=input_vector,
+                    top_k=3,
+                    filter={"user_id": user_id},
+                    include_metadata=True
+                )
+                relevant_memories = [match['metadata']['text'] for match in query_response['matches']]
+                if relevant_memories:
+                    long_term_memory = "\n".join(f"- {mem}" for mem in relevant_memories)
+                    print(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
 
-    return reply
+        except Exception as e:
+            print(f"記憶の検索でエラー: {e}")
+
+        # 3. 会話履歴とプロンプトの生成
+        history.append(f"ユーザー: {user_input}")
+        context = "\n".join(history[-12:])
+        topic = guess_topic(user_input)
+        system_prompt = build_system_prompt(
+            context=context,
+            topic=topic,
+            user_id=user_id,
+            long_term_memory=long_term_memory
+        )
+        
+        # 4. AIによる応答生成
+        try:
+            response = text_model.generate_content(system_prompt)
+            reply = response.text.strip()
+        except Exception as e:
+            reply = f"エラーが発生しました: {e}"
+
+        # 5. 応答の加工と保存
+        reply = post_process(reply, user_input)
+        pronoun = decide_pronoun(user_input)
+        reply = inject_pronoun(reply, pronoun)
+        history.append(f"アシスタント: {reply}")
+
+        # 6. 短期記憶をRedisに保存
+        redis_client.set(history_key, json.dumps(history[-50:]))
+
+        # 7. 新しい長期記憶の保存処理を呼び出す
+        summarize_and_store_memory(user_id, history)
+
+        return reply
 
 # ------------------------------------------------------------
 # (ここから下のコードは一切変更ありません)
