@@ -163,7 +163,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
             for match in query_response['matches']:
                 print(f"  [検索結果] Score: {match['score']:.4f}, Source: {match['metadata']['source']}, Text: {match['metadata']['text'][:50]}...")
-                if match['score'] > 0.65:
+                if match['score'] > 0.6:
                      context_chunks.append(match['metadata']['text'])
                      sources.add(match['metadata']['source'])
 
