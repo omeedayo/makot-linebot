@@ -173,7 +173,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             sources = set()
             # 類似度が低い結果を除外する（閾値は調整が必要）
             for match in query_response['matches']:
-                if match['score'] > 0.75: # 類似度の閾値
+               # if match['score'] > 0.75: # ← この行をコメントアウトして無効化
                     context_chunks.append(match['metadata']['text'])
                     sources.add(match['metadata']['source'])
             
