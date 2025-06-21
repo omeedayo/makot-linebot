@@ -172,9 +172,11 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             
             # ★ 変更点2: 類似度スコアの判定を復活させ、閾値を少し下げる
             for match in query_response['matches']:
-                if match['score'] > 0.7: # 類似度の閾値を0.7に調整
-                    context_chunks.append(match['metadata']['text'])
-                    sources.add(match['metadata']['source'])
+             # ★★★ ここにDEBUG用のprint文を追加 ★★★
+                print(f"  [DEBUG] Score: {match['score']:.4f}, Text: {match['metadata']['text'][:50]}...")
+                if match['score'] > 0.7: # 類似度の閾値
+                     context_chunks.append(match['metadata']['text'])
+                     sources.add(match['metadata']['source'])
             
             if not context_chunks:
                 return "うーん、その情報は見当たらないですね…！ごめんなさい🥺"
