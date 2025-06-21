@@ -146,34 +146,33 @@ def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
         return []
 
 # ★ chat_with_makot関数をQ&Aモードと通常会話モードの分岐を持つように大幅更新
+# chat_with_makot関数を大幅に更新
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    # --- Q&Aモードの判定 ---
-    # 「〜について教えて」「〜とは？」や、文末が「？」で終わる場合にQ&Aモードと判断
-    is_qa_mode = "について教えて" in user_input or "とは？" in user_input or user_input.endswith("？") or user_input.endswith("?")
+    # ★ 変更点1: Q&Aモードの判定を、キーワードベースに賢くする
+    QA_TRIGGERS = ["教えて", "説明して", "規定", "ルール", "方法", "って何", "とは"]
+    is_qa_mode = any(trigger in user_input for trigger in QA_TRIGGERS)
 
     if is_qa_mode:
         # --- ★ Q&Aモードの処理 ---
         print(f"[{user_id}] Q&Aモードで実行します。")
         try:
-            # 1. 質問をベクトル化
             query_vector = get_qa_embedding(user_input)
             if not query_vector:
                 return "ごめんなさい、質問をうまく理解できませんでした…。"
 
-            # 2. Pineconeの会社資料名前空間を検索
             query_response = pinecone_index.query(
                 vector=query_vector,
                 top_k=3,
-                namespace="company-docs", # ★ 会社資料の名前空間を指定
+                namespace="company-docs", # 会社資料の名前空間を指定
                 include_metadata=True
             )
 
-            # 3. 検索結果を整形してコンテキストを作成
             context_chunks = []
             sources = set()
-            # 類似度が低い結果を除外する（閾値は調整が必要）
+            
+            # ★ 変更点2: 類似度スコアの判定を復活させ、閾値を少し下げる
             for match in query_response['matches']:
-               # if match['score'] > 0.75: # ← この行をコメントアウトして無効化
+                if match['score'] > 0.7: # 類似度の閾値を0.7に調整
                     context_chunks.append(match['metadata']['text'])
                     sources.add(match['metadata']['source'])
             
@@ -183,12 +182,10 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             context_str = "\n---\n".join(context_chunks)
             source_str = f"(参考: {', '.join(sources)})"
             
-            # 4. Q&A専用プロンプトでAIに応答を生成させる
             prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
             response = text_model.generate_content(prompt)
             reply = response.text.strip()
             
-            # 出典情報を付与 (AIがルールを破って出典を付けなかった場合も考慮)
             if "ごめんなさい" not in reply and "参考:" not in reply:
                 reply += f" {source_str}"
             
@@ -199,66 +196,51 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             return "ごめんなさい、なんだかシステムが不調みたいです…。"
 
     else:
-        # --- ★ 通常会話モードの処理 (これまでの個人記憶RAG) ---
+        # --- ★ 通常会話モードの処理 (ここは変更なし) ---
         print(f"[{user_id}] 通常会話モードで実行します。")
-        # 1. 短期記憶(会話履歴)をRedisから取得
         history_key = f"chat_history:{user_id}"
         history_json = redis_client.get(history_key)
         history: list[str] = json.loads(history_json) if history_json else []
 
-        # 2. RAG検索: ユーザーの今の発言に最も関連する長期記憶をPineconeから検索
         long_term_memory = None
         try:
             input_vector = get_embedding(user_input)
             if input_vector:
-                # 同じユーザーの記憶の中から、意味が近いものを最大3つ検索
-                # (namespaceを指定せず、メタデータのuser_idでフィルタリング)
                 query_response = pinecone_index.query(
                     vector=input_vector,
                     top_k=3,
                     filter={"user_id": user_id},
                     include_metadata=True
                 )
-                relevant_memories = [match['metadata']['text'] for match in query_response['matches']]
+                relevant_memories = [match['metadata']['text'] for match in query_response['matches'] if match['score'] > 0.7] # ここにもスコア判定を入れておくと精度が上がる
                 if relevant_memories:
                     long_term_memory = "\n".join(f"- {mem}" for mem in relevant_memories)
                     print(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
-
         except Exception as e:
             print(f"記憶の検索でエラー: {e}")
 
-        # 3. 会話履歴とプロンプトの生成
         history.append(f"ユーザー: {user_input}")
         context = "\n".join(history[-12:])
         topic = guess_topic(user_input)
         system_prompt = build_system_prompt(
-            context=context,
-            topic=topic,
-            user_id=user_id,
-            long_term_memory=long_term_memory
+            context=context, topic=topic, user_id=user_id, long_term_memory=long_term_memory
         )
         
-        # 4. AIによる応答生成
         try:
             response = text_model.generate_content(system_prompt)
             reply = response.text.strip()
         except Exception as e:
             reply = f"エラーが発生しました: {e}"
 
-        # 5. 応答の加工と保存
         reply = post_process(reply, user_input)
         pronoun = decide_pronoun(user_input)
         reply = inject_pronoun(reply, pronoun)
         history.append(f"アシスタント: {reply}")
 
-        # 6. 短期記憶をRedisに保存
         redis_client.set(history_key, json.dumps(history[-50:]))
-
-        # 7. 新しい長期記憶の保存処理を呼び出す
         summarize_and_store_memory(user_id, history)
 
         return reply
-
 # ------------------------------------------------------------
 # (ここから下のコードは一切変更ありません)
 # ------------------------------------------------------------
