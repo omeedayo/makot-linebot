@@ -2,9 +2,12 @@ import os
 import fitz  # PyMuPDF
 import google.generativeai as genai
 import pinecone
-from tqdm import tqdm # 進捗バーを表示するためのライブラリ (pip install tqdm)
+from tqdm import tqdm 
 import uuid
 import time
+from dotenv import load_dotenv  # ★ この行を追加
+
+load_dotenv('.env.development.local')
 
 # -----------------------------------------------------------------
 # 初期設定 (app.pyと同様の環境変数を読み込む)
