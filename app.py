@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ3: 会社資料Q&A対応版)
+# app.py (ステップ3: 会社資料Q&A対応版 - 改善版)
 # ============================================================
 
 import os
@@ -51,7 +51,7 @@ PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
 
 # 各種クライアントの初期化
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20")
+text_model = genai.GenerativeModel("gemini-1.5-flash") # モデルを更新
 embedding_model = "models/text-embedding-004"
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -104,11 +104,8 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
     except Exception as e:
         print(f"記憶の保存処理でエラー: {e}")
 
-# (ファイル冒頭のimportや初期化は変更なしなので省略)
-# ...
-
 # ------------------------------------------------------------
-# ★★★ Q&Aモードと通常会話モードの処理（改善版）★★★
+# Q&Aモードと通常会話モードの処理（改善版）
 # ------------------------------------------------------------
 QA_SYSTEM_PROMPT = textwrap.dedent("""
     あなたは、後輩女子『まこT』として、提供された参考情報に【基づいてのみ】ユーザーの質問に回答するアシスタントです。
@@ -129,7 +126,7 @@ QA_SYSTEM_PROMPT = textwrap.dedent("""
 """)
 
 def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
-    # (この関数は変更なし)
+    """Q&A検索用のテキストをベクトルに変換する"""
     try:
         result = genai.embed_content(model=embedding_model, content=text, task_type=task_type)
         return result['embedding']
@@ -137,7 +134,6 @@ def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
         print(f"QAベクトル化エラー: {e}")
         return []
 
-# ★★★ クエリ拡張用の関数を追加 ★★★
 def expand_query(question: str) -> list[str]:
     """LLMを使って質問を複数の表現に拡張する"""
     prompt = textwrap.dedent(f"""
@@ -163,7 +159,6 @@ def expand_query(question: str) -> list[str]:
     """)
     try:
         response = text_model.generate_content(prompt)
-        # 箇条書きをパースしてリストにする
         queries = [line.strip().lstrip('- ') for line in response.text.strip().split('\n') if line.strip()]
         return list(set(queries)) # 重複を削除
     except Exception as e:
@@ -178,11 +173,9 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     if is_qa_mode:
         print(f"[{user_id}] Q&Aモードで実行します。")
         try:
-            # ★★★ クエリ拡張を実行 ★★★
             expanded_queries = expand_query(user_input)
             print(f"  [クエリ拡張] 元の質問: '{user_input}' -> 拡張後: {expanded_queries}")
 
-            # 拡張された各クエリでベクトル検索を行い、結果を統合
             all_matches = {}
             for query in expanded_queries:
                 query_vector = get_qa_embedding(query)
@@ -190,27 +183,26 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
                 query_response = pinecone_index.query(
                     vector=query_vector,
-                    top_k=3, # 各クエリで3件取得
+                    top_k=3,
                     namespace="company-docs",
                     include_metadata=True
                 )
                 for match in query_response['matches']:
-                    # IDで重複を管理し、最も高いスコアを保持
                     if match.id not in all_matches or match.score > all_matches[match.id].score:
                         all_matches[match.id] = match
 
-            # スコアの高い順にソート
             sorted_matches = sorted(all_matches.values(), key=lambda x: x.score, reverse=True)
 
             context_chunks = []
             sources = set()
             
             print("\n--- 統合後の検索結果 ---")
-            for match in sorted_matches[:5]: # 上位5件を利用
-                print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Title: {match.metadata.get('title', 'N/A')}")
-                if match.score > 0.60:  # 閾値は少し低めでもOK
-                     # メタデータのタイトル情報もコンテキストに含める
-                     context_chunks.append(f"【出典: {match.metadata['source']} / 見出し: {match.metadata.get('title', 'N/A')}】\n{match.metadata['text']}")
+            for match in sorted_matches[:5]:
+                # ★★★ ログ出力を強化し、章の情報も表示 ★★★
+                print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Chapter: {match.metadata.get('chapter', 'N/A')}, Title: {match.metadata.get('title', 'N/A')}")
+                if match.score > 0.60:
+                     # ★★★ LLMに与えるコンテキストに「章」の情報も追加 ★★★
+                     context_chunks.append(f"【出典: {match.metadata['source']} / 章: {match.metadata.get('chapter', 'N/A')} / 見出し: {match.metadata.get('title', 'N/A')}】\n{match.metadata['text']}")
                      sources.add(match.metadata['source'])
 
             if not context_chunks:
@@ -235,7 +227,6 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     else:
         # --- 通常会話モード (変更なし) ---
         print(f"[{user_id}] 通常会話モードで実行します。")
-        # ... (以前のコードと同じなので省略) ...
         history_key = f"chat_history:{user_id}"
         history_json = redis_client.get(history_key)
         history: list[str] = json.loads(history_json) if history_json else []
@@ -280,8 +271,6 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
         summarize_and_store_memory(user_id, history)
 
         return reply
-# (ファイル末尾のWebhookハンドラ等は変更なしなので省略)
-# ...
 
 # ------------------------------------------------------------
 # ユーティリティ & Webhookハンドラ
@@ -299,25 +288,28 @@ def decide_pronoun(user_text: str) -> str:
 def inject_pronoun(reply: str, pronoun: str) -> str: return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
 def post_process(reply: str, user_input: str) -> str:
-    # 1. ユーザーの入力に応じて感情表現を追加する
     high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"])
     low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
     if high: reply = apply_expression_style(reply, mood="high")
     elif low: reply += " 🥺"
 
-    # 2. Markdown記法や不要な記号を除去する
-    reply = reply.replace('**', '')
-    reply = reply.replace('*', '')
-    reply = reply.replace('`', '')
+    reply = re.sub(r'[\*`]', '', reply) # Markdown記法 **, *, ` を除去
 
-    # 3. AIの返信が曖昧な表現を含んでいる場合に、確率で「しらんけど」を付ける
     if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
         reply += " しらんけど"
     
-    # 4. 返信が長くなりすぎないように、一定の文の長さでカットする
-    reply_sentences = re.split(r'(。|！|？)', reply)
-    if len(reply_sentences) > 4: # 文が多すぎる場合
-        reply = "".join(reply_sentences[:4]) # 最初の数文に絞る
+    reply_sentences = re.split(r'([。！？])', reply)
+    if len(reply_sentences) > 5:
+        processed_reply = ""
+        count = 0
+        for i in range(0, len(reply_sentences), 2):
+            if i+1 < len(reply_sentences):
+                processed_reply += reply_sentences[i] + reply_sentences[i+1]
+            else:
+                processed_reply += reply_sentences[i]
+            count += 1
+            if count >= 2: break # 2文でカット
+        reply = processed_reply
     
     return reply
 def get_gcp_token() -> str:
@@ -369,17 +361,17 @@ def line_webhook():
 def handle_text_message(event):
     src_type = event.source.type; user_text = event.message.text
     if src_type in ["group", "room"] and not is_bot_mentioned(user_text): return
-    user_id = event.source.user_id if event.source.type == 'user' else 'default_user_id' # グループチャット等でのユーザーID取得を考慮
+    user_id = event.source.user_id
     
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="おっけーです！ちょっと待っててくださいね…🥰"))
             img_url = generate_image_with_rest_api(user_text)
             msg = ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
-            line_bot_api.push_message(event.source.sender_id, msg)
+            line_bot_api.push_message(user_id, msg)
         except Exception as e:
             print(f"画像生成でエラーが発生: {e}")
-            line_bot_api.push_message(event.source.sender_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪い・・・のはおめぇのせいだよ\n理由: {e}"))
+            line_bot_api.push_message(user_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪いみたいです…\n理由: {e}"))
         return
     reply_text = chat_with_makot(user_text, user_id=user_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
