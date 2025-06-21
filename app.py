@@ -27,6 +27,7 @@ from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 import redis
 import pinecone
+from dotenv import load_dotenv
 
 # --- 他のPythonファイルからインポート ---
 from character_makot import MAKOT, build_system_prompt, apply_expression_style
@@ -34,6 +35,7 @@ from character_makot import MAKOT, build_system_prompt, apply_expression_style
 # ------------------------------------------------------------
 # 初期化処理
 # ------------------------------------------------------------
+load_dotenv('.env.development.local')
 app = Flask(__name__)
 # 環境変数
 GEMINI_API_KEY            = os.getenv("GEMINI_API_KEY")
@@ -49,12 +51,12 @@ PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
 
 # 各種クライアントの初期化
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # モデルを更新 (もし1.5 Flashが利用可能なら)
+text_model = genai.GenerativeModel("gemini-1.5-flash-preview-0514")
 embedding_model = "models/text-embedding-004"
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
-redis_client = redis.from_url(REDIS_URL)
+redis_client = redis.from_url(REDIS_URL, decode_responses=True)
 gcp_token_cache = {"token": None, "expires_at": 0}
 
 if not PINECONE_API_KEY or not PINECONE_INDEX_NAME:
@@ -69,17 +71,16 @@ pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 def get_embedding(text: str) -> list[float]:
     """テキストをベクトルに変換する（汎用）"""
     try:
-        # task_typeを指定しない汎用的なベクトル化
         result = genai.embed_content(model=embedding_model, content=text)
         return result['embedding']
     except Exception as e:
-        print(f"ベクトル化でエラー: {e}")
+        print(f"ベクトル化エラー: {e}")
         return []
 
 def summarize_and_store_memory(user_id: str, history: list[str]):
     """会話を要約し、ベクトル化してPineconeに長期記憶として保存する"""
-    recent_talk = "\n".join(history[-2:])
-    if len(recent_talk) < 20: return
+    recent_talk = "\n".join(history[-4:])
+    if len(recent_talk) < 50: return
 
     summary_prompt = textwrap.dedent(f"""
         あなたはユーザーとの会話の要約担当です。以下の会話から、ユーザーの個人的な情報（名前、好み、最近の出来事、ペット、悩み、計画など）を抽出し、簡潔な箇条書きのメモとして1～2行で要約してください。重要な情報が含まれていない場合は、必ず「特になし」とだけ出力してください。
@@ -88,7 +89,6 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
         {recent_talk}
         ---
         要約:""")
-
     try:
         summary_response = text_model.generate_content(summary_prompt)
         summary = summary_response.text.strip()
@@ -99,19 +99,14 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
 
             memory_id = str(uuid.uuid4())
             metadata = { "user_id": user_id, "text": summary, "created_at": time.time() }
-            
-            # 個人記憶はnamespaceを指定せずに保存 (もしくは別のnamespaceを指定)
-            pinecone_index.upsert(vectors=[(memory_id, vector, metadata)])
+            pinecone_index.upsert(vectors=[(memory_id, vector, metadata)], namespace="conversation-memory")
             print(f"[{user_id}] の新しい記憶をベクトルDBに保存しました: {summary}")
-
     except Exception as e:
         print(f"記憶の保存処理でエラー: {e}")
 
 # ------------------------------------------------------------
-# ★★★ ここからがステップ3の変更箇所 ★★★
+# Q&Aモードと通常会話モードの処理
 # ------------------------------------------------------------
-
-# ★ Q&A用の新しいプロンプトテンプレート
 QA_SYSTEM_PROMPT = textwrap.dedent("""
     あなたは、後輩女子『まこT』として、提供された参考情報に【基づいてのみ】ユーザーの質問に回答するアシスタントです。
     あなたの役割は、参考情報の内容を分かりやすく、親しみやすい口調で要約して伝えることです。
@@ -130,11 +125,9 @@ QA_SYSTEM_PROMPT = textwrap.dedent("""
     以上のルールを厳格に守り、『まこT』として回答してください：
 """)
 
-# ★ Q&A用のベクトル化関数
 def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
-    """質問をベクトル化する"""
+    """質問をベクトル化する（質問検索用）"""
     try:
-        # 質問のベクトル化時は task_type を RETRIEVAL_QUERY にするのが推奨
         result = genai.embed_content(
             model=embedding_model,
             content=text,
@@ -142,18 +135,16 @@ def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
         )
         return result['embedding']
     except Exception as e:
-        print(f"ベクトル化でエラー: {e}")
+        print(f"QAベクトル化エラー: {e}")
         return []
 
-# ★ chat_with_makot関数をQ&Aモードと通常会話モードの分岐を持つように大幅更新
-# chat_with_makot関数を大幅に更新
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    # ★ 変更点1: Q&Aモードの判定を、キーワードベースに賢くする
-    QA_TRIGGERS = ["教えて", "説明して", "規定", "ルール", "方法", "って何", "とは"]
+    """まこTとのチャット処理。Q&Aモードと通常会話モードを自動で切り替える"""
+    QA_TRIGGERS = ["教えて", "説明して", "規定", "ルール", "方法", "って何", "とは", "について", "の条件"]
     is_qa_mode = any(trigger in user_input for trigger in QA_TRIGGERS)
 
     if is_qa_mode:
-        # --- ★ Q&Aモードの処理 ---
+        # --- Q&Aモード ---
         print(f"[{user_id}] Q&Aモードで実行します。")
         try:
             query_vector = get_qa_embedding(user_input)
@@ -162,43 +153,41 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
             query_response = pinecone_index.query(
                 vector=query_vector,
-                top_k=3,
-                namespace="company-docs", # 会社資料の名前空間を指定
+                top_k=5,
+                namespace="company-docs",
                 include_metadata=True
             )
 
             context_chunks = []
             sources = set()
-            
-            # ★ 変更点2: 類似度スコアの判定を復活させ、閾値を少し下げる
+
             for match in query_response['matches']:
-             # ★★★ ここにDEBUG用のprint文を追加 ★★★
-                print(f"  [DEBUG] Score: {match['score']:.4f}, Text: {match['metadata']['text'][:50]}...")
-                if match['score'] > 0.6: # 類似度の閾値
+                print(f"  [検索結果] Score: {match['score']:.4f}, Source: {match['metadata']['source']}, Text: {match['metadata']['text'][:50]}...")
+                if match['score'] > 0.65:
                      context_chunks.append(match['metadata']['text'])
                      sources.add(match['metadata']['source'])
-            
+
             if not context_chunks:
                 return "うーん、その情報は見当たらないですね…！ごめんなさい🥺"
 
             context_str = "\n---\n".join(context_chunks)
-            source_str = f"(参考: {', '.join(sources)})"
-            
+            source_str = f"(参考: {', '.join(sorted(list(sources)))})"
+
             prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
             response = text_model.generate_content(prompt)
             reply = response.text.strip()
-            
+
             if "ごめんなさい" not in reply and "参考:" not in reply:
                 reply += f" {source_str}"
             
             return reply
 
         except Exception as e:
-            print(f"Q&A処理でエラー: {e}")
-            return "ごめんなさい、なんだかシステムが不調みたいです…。"
+            print(f"Q&A処理エラー: {e}")
+            return "ごめんなさい、なんだかシステムが不調みたいです…。もう一度試してみてください！"
 
     else:
-        # --- ★ 通常会話モードの処理 (ここは変更なし) ---
+        # --- 通常会話モード ---
         print(f"[{user_id}] 通常会話モードで実行します。")
         history_key = f"chat_history:{user_id}"
         history_json = redis_client.get(history_key)
@@ -211,15 +200,16 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
                 query_response = pinecone_index.query(
                     vector=input_vector,
                     top_k=3,
+                    namespace="conversation-memory",
                     filter={"user_id": user_id},
                     include_metadata=True
                 )
-                relevant_memories = [match['metadata']['text'] for match in query_response['matches'] if match['score'] > 0.7] # ここにもスコア判定を入れておくと精度が上がる
+                relevant_memories = [match['metadata']['text'] for match in query_response['matches'] if match['score'] > 0.7]
                 if relevant_memories:
                     long_term_memory = "\n".join(f"- {mem}" for mem in relevant_memories)
                     print(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
         except Exception as e:
-            print(f"記憶の検索でエラー: {e}")
+            print(f"記憶の検索エラー: {e}")
 
         history.append(f"ユーザー: {user_input}")
         context = "\n".join(history[-12:])
@@ -243,8 +233,9 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
         summarize_and_store_memory(user_id, history)
 
         return reply
+
 # ------------------------------------------------------------
-# (ここから下のコードは一切変更ありません)
+# ユーティリティ & Webhookハンドラ
 # ------------------------------------------------------------
 def is_bot_mentioned(text: str) -> bool: return any(nick in text for nick in [MAKOT["name"]] + MAKOT["nicknames"])
 def guess_topic(text: str):
@@ -315,18 +306,19 @@ def line_webhook():
 def handle_text_message(event):
     src_type = event.source.type; user_text = event.message.text
     if src_type in ["group", "room"] and not is_bot_mentioned(user_text): return
-    src_id = (event.source.user_id if src_type == "user" else event.source.group_id if src_type == "group" else event.source.room_id if src_type == "room" else "unknown")
+    user_id = event.source.user_id if event.source.type == 'user' else 'default_user_id' # グループチャット等でのユーザーID取得を考慮
+    
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="おっけーです！ちょっと待っててくださいね…🥰"))
             img_url = generate_image_with_rest_api(user_text)
             msg = ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
-            line_bot_api.push_message(src_id, msg)
+            line_bot_api.push_message(event.source.sender_id, msg)
         except Exception as e:
             print(f"画像生成でエラーが発生: {e}")
-            line_bot_api.push_message(src_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪い・・・のはおめぇのせいだよ\n理由: {e}"))
+            line_bot_api.push_message(event.source.sender_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪い・・・のはおめぇのせいだよ\n理由: {e}"))
         return
-    reply_text = chat_with_makot(user_text, user_id=src_id)
+    reply_text = chat_with_makot(user_text, user_id=user_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
 @webhook_handler.add(MessageEvent, message=ImageMessage)
@@ -351,10 +343,13 @@ def handle_image_message(event):
 def handle_sticker_message(event):
     sticker_map = { "11537": {"52002734": "ありがとうございます！うれしいです🥰", "52002748": "おつかれさまです！🙇‍♀️"}, "11538": {"51626494": "ひえっ…！なにかありましたか！？🥺", "51626501": "ふぁーーーーーーーーーーーｗｗｗｗｗｗｗ"} }
     package_id = event.message.package_id; sticker_id = event.message.sticker_id
-    reply_text = sticker_map.get(package_id, {}).get(sticker_id)
+    reply_text = sticker_map.get(str(package_id), {}).get(str(sticker_id))
     if not reply_text: reply_text = random.choice(["スタンプありがとうございます！🥰", "そのスタンプかわいいですね！", "お、いいスタンプ！私もほしいです！"])
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
 @app.route("/")
 def home():
     return "まこT LINE Bot is running!"
+
+if __name__ == "__main__":
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))

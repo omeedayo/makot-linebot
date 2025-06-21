@@ -1,11 +1,11 @@
-# character_makot.py (長期記憶対応版)
+# character_makot.py (長期記憶 & RAG対応版)
 
 import random
 import textwrap
 from typing import Optional
 
 # ---------------------------------------------------------------------------
-# ベースデータ辞書 (変更なし)
+# ベースデータ辞書
 # ---------------------------------------------------------------------------
 MAKOT = {
     "name": "まこT", "nicknames": ["おに", "まこち"], "mbti": "ISFJ", "birthplace": "三重県伊勢市", "birthday": "1999-08-31", "zodiac": "乙女座",
@@ -35,7 +35,7 @@ MAKOT = {
 }
 
 # ---------------------------------------------------------------------------
-# 動的 persona 生成 (変更なし)
+# 動的 persona 生成
 # ---------------------------------------------------------------------------
 def build_persona(info: dict) -> str:
     info2 = info.copy()
@@ -44,7 +44,7 @@ def build_persona(info: dict) -> str:
 MAKOT["persona"] = build_persona(MAKOT)
 
 # ---------------------------------------------------------------------------
-# 返信後加工ユーティリティ (変更なし)
+# 返信後加工ユーティリティ
 # ---------------------------------------------------------------------------
 def apply_expression_style(text: str, mood: str = "normal") -> str:
     rules = MAKOT["expression_rules"]
@@ -57,25 +57,23 @@ def apply_expression_style(text: str, mood: str = "normal") -> str:
     return text
 
 # ---------------------------------------------------------------------------
-# Few‑shot サンプルを組み立て (変更なし)
+# Few‑shot サンプルを組み立て
 # ---------------------------------------------------------------------------
 def sample_examples(k: int = 3) -> str:
     k = min(k, len(MAKOT["example_conversation"]))
     ex = random.sample(MAKOT["example_conversation"], k=k)
     return "\n".join(f"ユーザー: {e['user']}\nアシスタント: {e['assistant']}" for e in ex)
 
-# ★★★★★ ここからが修正箇所 ★★★★★
 # ---------------------------------------------------------------------------
-# prompt builder (長期記憶対応)
+# プロンプトビルダー
 # ---------------------------------------------------------------------------
-# ★ 変更: user_id と long_term_memory を引数に追加
 def build_system_prompt(context: str, topic: Optional[str] = None, user_id: Optional[str] = None, long_term_memory: Optional[str] = None) -> str:
+    """通常会話用のプロンプトを構築する"""
     parts = [
         ("【参考対話】", sample_examples(k=5)),
         ("【キャラクター設定】", MAKOT["persona"]),
     ]
     
-    # ★ 追加: 長期記憶が存在すればプロンプトの先頭に含める
     if long_term_memory:
         parts.insert(0, ("【あなたとユーザーの過去の記憶（最重要）】", long_term_memory))
 
