@@ -52,7 +52,8 @@ PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
 # 各種クライアントの初期化
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
 text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # モデルを更新
-embedding_model = "models/text-embedding-004"
+# ★★★★★ モデル名を text-multilingual-embedding-002 に変更 ★★★★★
+embedding_model = "text-multilingual-embedding-002" 
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
@@ -64,17 +65,40 @@ if not PINECONE_API_KEY or not PINECONE_INDEX_NAME:
 pc = pinecone.Pinecone(api_key=PINECONE_API_KEY)
 pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 
+# ------------------------------------------------------------
+# GCP認証トークン取得関数 (画像生成とベクトル化で共用)
+# ------------------------------------------------------------
+def get_gcp_token() -> str:
+    if gcp_token_cache["token"] and time.time() < gcp_token_cache["expires_at"]: return gcp_token_cache["token"]
+    if not GCP_CREDENTIALS_JSON_STR: raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
+    try:
+        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR); creds = service_account.Credentials.from_service_account_info(credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(Request());
+        if not creds.token: raise ValueError("トークンの取得に失敗しました。")
+        gcp_token_cache["token"] = creds.token; gcp_token_cache["expires_at"] = time.time() + 3300
+        return creds.token
+    except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
 
 # ------------------------------------------------------------
 # ベクトル化 & RAG関連関数
 # ------------------------------------------------------------
+
+# ★★★★★ Vertex AI の text-multilingual-embedding-002 を使うように関数を修正 ★★★★★
 def get_embedding(text: str) -> list[float]:
-    """テキストをベクトルに変換する（汎用）"""
+    """テキストをベクトルに変換する（汎用会話用）"""
     try:
-        result = genai.embed_content(model=embedding_model, content=text)
-        return result['embedding']
+        token = get_gcp_token()
+        endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}"
+                        f"/locations/{GCP_LOCATION}/publishers/google/models/{embedding_model}:predict")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+        # SEMANTIC_SIMILARITYは一般的な類似性タスクに適しています
+        data = {"instances": [{"content": text, "task_type": "SEMANTIC_SIMILARITY"}]}
+        response = requests.post(endpoint_url, headers=headers, json=data)
+        response.raise_for_status()
+        embedding = response.json()["predictions"][0]["embeddings"]["values"]
+        return embedding
     except Exception as e:
-        print(f"ベクトル化エラー: {e}")
+        print(f"ベクトル化エラー (get_embedding): {e}")
         return []
 
 def summarize_and_store_memory(user_id: str, history: list[str]):
@@ -125,14 +149,23 @@ QA_SYSTEM_PROMPT = textwrap.dedent("""
     以上のルールを厳格に守り、『まこT』として回答してください：
 """)
 
+# ★★★★★ Vertex AI の text-multilingual-embedding-002 を使うように関数を修正 ★★★★★
 def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
     """Q&A検索用のテキストをベクトルに変換する"""
     try:
-        result = genai.embed_content(model=embedding_model, content=text, task_type=task_type)
-        return result['embedding']
+        token = get_gcp_token()
+        endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}"
+                        f"/locations/{GCP_LOCATION}/publishers/google/models/{embedding_model}:predict")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+        data = {"instances": [{"content": text, "task_type": task_type}]}
+        response = requests.post(endpoint_url, headers=headers, json=data)
+        response.raise_for_status()
+        embedding = response.json()["predictions"][0]["embeddings"]["values"]
+        return embedding
     except Exception as e:
         print(f"QAベクトル化エラー: {e}")
         return []
+
 
 def expand_query(question: str) -> list[str]:
     """LLMを使って質問を複数の表現に拡張する"""
@@ -312,16 +345,7 @@ def post_process(reply: str, user_input: str) -> str:
         reply = processed_reply
     
     return reply
-def get_gcp_token() -> str:
-    if gcp_token_cache["token"] and time.time() < gcp_token_cache["expires_at"]: return gcp_token_cache["token"]
-    if not GCP_CREDENTIALS_JSON_STR: raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
-    try:
-        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR); creds = service_account.Credentials.from_service_account_info(credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
-        creds.refresh(Request());
-        if not creds.token: raise ValueError("トークンの取得に失敗しました。")
-        gcp_token_cache["token"] = creds.token; gcp_token_cache["expires_at"] = time.time() + 3300
-        return creds.token
-    except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
+
 def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
     if not client_id: raise Exception("Imgur Client IDが設定されていません。")
     url = "https://api.imgur.com/3/image"; headers = {"Authorization": f"Client-ID {client_id}"}

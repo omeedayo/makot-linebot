@@ -6,6 +6,10 @@ from tqdm import tqdm
 import uuid
 import time
 import re
+import json
+import requests
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request
 from dotenv import load_dotenv
 
 load_dotenv('.env.development.local')
@@ -14,25 +18,51 @@ load_dotenv('.env.development.local')
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 PINECONE_API_KEY = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME = os.getenv("PINECONE_INDEX_NAME")
+# ★★★★★ GCP関連の環境変数を追加 ★★★★★
+GCP_PROJECT_ID           = os.getenv("GCP_PROJECT_ID")
+GCP_LOCATION             = os.getenv("GCP_LOCATION", "us-central1")
+GCP_CREDENTIALS_JSON_STR = os.getenv("GCP_CREDENTIALS_JSON")
 
-if not all([GEMINI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME]):
-    raise ValueError("必要な環境変数が設定されていません。")
+if not all([GEMINI_API_KEY, PINECONE_API_KEY, PINECONE_INDEX_NAME, GCP_PROJECT_ID, GCP_CREDENTIALS_JSON_STR]):
+    raise ValueError("必要な環境変数(GEMINI, PINECONE, GCP)が設定されていません。")
 
 genai.configure(api_key=GEMINI_API_KEY)
-embedding_model = "models/text-embedding-004"
+# ★★★★★ モデル名を text-multilingual-embedding-002 に変更 ★★★★★
+embedding_model = "text-multilingual-embedding-002"
 pc = pinecone.Pinecone(api_key=PINECONE_API_KEY)
 pinecone_index = pc.Index(PINECONE_INDEX_NAME)
+gcp_token_cache = {"token": None, "expires_at": 0}
 
 # --- 定数設定 ---
 DOCUMENTS_DIR = "documents"
 CHUNK_SIZE = 800  # チャンクの最大文字数
 NAMESPACE = "company-docs"
 
+# ★★★★★ GCP認証トークン取得関数を追加 (app.pyからコピー) ★★★★★
+def get_gcp_token() -> str:
+    if gcp_token_cache["token"] and time.time() < gcp_token_cache["expires_at"]: return gcp_token_cache["token"]
+    if not GCP_CREDENTIALS_JSON_STR: raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
+    try:
+        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR); creds = service_account.Credentials.from_service_account_info(credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(Request());
+        if not creds.token: raise ValueError("トークンの取得に失敗しました。")
+        gcp_token_cache["token"] = creds.token; gcp_token_cache["expires_at"] = time.time() + 3300
+        return creds.token
+    except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
+
+# ★★★★★ Vertex AI の text-multilingual-embedding-002 を使うように関数を修正 ★★★★★
 def get_embedding(text: str, task_type="RETRIEVAL_DOCUMENT") -> list[float]:
     """テキストをベクトルに変換する"""
     try:
-        result = genai.embed_content(model=embedding_model, content=text, task_type=task_type)
-        return result['embedding']
+        token = get_gcp_token()
+        endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}"
+                        f"/locations/{GCP_LOCATION}/publishers/google/models/{embedding_model}:predict")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+        data = {"instances": [{"content": text, "task_type": task_type}]}
+        response = requests.post(endpoint_url, headers=headers, json=data)
+        response.raise_for_status()
+        embedding = response.json()["predictions"][0]["embeddings"]["values"]
+        return embedding
     except Exception as e:
         print(f"ベクトル化エラー: {e}")
         return []
