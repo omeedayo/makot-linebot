@@ -233,7 +233,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             for match in sorted_matches[:5]:
                 # ★★★ ログ出力を強化し、章の情報も表示 ★★★
                 print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Chapter: {match.metadata.get('chapter', 'N/A')}, Title: {match.metadata.get('title', 'N/A')}")
-                if match.score > 0.55:
+                if match.score > 0.65:
                      # ★★★ LLMに与えるコンテキストに「章」の情報も追加 ★★★
                      context_chunks.append(f"【出典: {match.metadata['source']} / 章: {match.metadata.get('chapter', 'N/A')} / 見出し: {match.metadata.get('title', 'N/A')}】\n{match.metadata['text']}")
                      sources.add(match.metadata['source'])
