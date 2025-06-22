@@ -220,7 +220,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
             # ★★★ 修正箇所 ★★★
             # Q&Aモードの回答に含まれるMarkdown記法(*, `)も除去する
-            reply = re.sub(r'[\*`]', '', reply)
+            reply = re.sub(r'[\*`]+', '', reply)
             
             return reply
 
