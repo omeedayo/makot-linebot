@@ -220,7 +220,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
             # ★★★ 修正箇所 ★★★
             # Q&Aモードの回答に含まれるMarkdown記法(*, `)も除去する
-            reply = re.sub(r'[\*`]+', '', reply)
+            reply = re.sub(r'[\*`＊∗]+', '', reply)
             
             return reply
 
@@ -297,7 +297,7 @@ def post_process(reply: str, user_input: str) -> str:
     if high: reply = apply_expression_style(reply, mood="high")
     elif low: reply += " 🥺"
 
-    reply = re.sub(r'[\*`]', '', reply) # Markdown記法 **, *, ` を除去
+    reply = re.sub(r'[\*`＊∗]+', '', reply) # Markdown記法 **, *, ` を除去
 
     if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
         reply += " しらんけど"
