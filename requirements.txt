@@ -5,5 +5,4 @@ requests==2.31.0
 google-auth==2.29.0
 redis==5.0.4
 pinecone-client==4.1.1
-PyMuPDF==1.24.1
 python-dotenv
