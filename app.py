@@ -37,7 +37,8 @@ from character_makot import MAKOT, build_system_prompt, apply_expression_style
 # ------------------------------------------------------------
 load_dotenv('.env.development.local')
 app = Flask(__name__)
-# 環境変数
+
+# --- 環境変数 ---
 GEMINI_API_KEY            = os.getenv("GEMINI_API_KEY")
 LINE_CHANNEL_ACCESS_TOKEN = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
 LINE_CHANNEL_SECRET       = os.getenv("LINE_CHANNEL_SECRET")
@@ -48,11 +49,15 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
 PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
+# ★★★ モデル名を環境変数から読み込むように変更 ★★★
+TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
+VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
+RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 
-# 各種クライアントの初期化
+
+# --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel("gemini-2.5-flash-preview-05-20") # モデルを更新
-embedding_model = "models/text-embedding-004"
+text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
@@ -68,14 +73,46 @@ pinecone_index = pc.Index(PINECONE_INDEX_NAME)
 # ------------------------------------------------------------
 # ベクトル化 & RAG関連関数
 # ------------------------------------------------------------
-def get_embedding(text: str) -> list[float]:
-    """テキストをベクトルに変換する（汎用）"""
+def get_gcp_token() -> str:
+    if gcp_token_cache["token"] and time.time() < gcp_token_cache["expires_at"]: return gcp_token_cache["token"]
+    if not GCP_CREDENTIALS_JSON_STR: raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
     try:
-        result = genai.embed_content(model=embedding_model, content=text)
-        return result['embedding']
-    except Exception as e:
-        print(f"ベクトル化エラー: {e}")
+        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR); creds = service_account.Credentials.from_service_account_info(credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
+        creds.refresh(Request());
+        if not creds.token: raise ValueError("トークンの取得に失敗しました。")
+        gcp_token_cache["token"] = creds.token; gcp_token_cache["expires_at"] = time.time() + 3300
+        return creds.token
+    except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
+
+def _get_vertex_embedding(text: str, task_type: str) -> list[float]:
+    """Vertex AIのEmbeddingモデルを呼び出す共通関数"""
+    if not text:
         return []
+    try:
+        token = get_gcp_token()
+        endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}"
+                        f"/locations/{GCP_LOCATION}/publishers/google/models/{VERTEX_EMBEDDING_MODEL}:predict")
+        headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
+        data = {"instances": [{"content": text, "task_type": task_type}]}
+        response = requests.post(endpoint_url, headers=headers, json=data)
+        response.raise_for_status()
+        response_data = response.json()
+        if "predictions" not in response_data or not response_data["predictions"]:
+             print(f"Vertex AIからembeddingが返されませんでした: {response_data}")
+             return []
+        embedding = response_data["predictions"][0]["embeddings"]["values"]
+        return embedding
+    except Exception as e:
+        print(f"Vertex AI ベクトル化エラー: {e}")
+        return []
+
+def get_embedding(text: str) -> list[float]:
+    """テキストをベクトルに変換する（通常会話の記憶検索用）"""
+    return _get_vertex_embedding(text, task_type="RETRIEVAL_DOCUMENT")
+
+def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
+    """Q&A検索用のテキストをベクトルに変換する"""
+    return _get_vertex_embedding(text, task_type=task_type)
 
 def summarize_and_store_memory(user_id: str, history: list[str]):
     """会話を要約し、ベクトル化してPineconeに長期記憶として保存する"""
@@ -105,7 +142,7 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
         print(f"記憶の保存処理でエラー: {e}")
 
 # ------------------------------------------------------------
-# Q&Aモードと通常会話モードの処理（改善版）
+# Q&Aモードと通常会話モードの処理
 # ------------------------------------------------------------
 QA_SYSTEM_PROMPT = textwrap.dedent("""
     あなたは、後輩女子『まこT』として、提供された参考情報に【基づいてのみ】ユーザーの質問に回答するアシスタントです。
@@ -114,7 +151,7 @@ QA_SYSTEM_PROMPT = textwrap.dedent("""
     【重要ルール】
     - 必ず参考情報に含まれる事実だけを使って回答してください。
     - 参考情報に答えがない場合や、関連性が低い場合は、絶対に推測で答えてはいけません。代わりに「うーん、その情報は見当たらないですね…！ごめんなさい🥺」と正直に回答してください。
-    - 回答の最後に出典（source）を `(参考: ファイル名)` の形で付け加えてください。
+    - 回答の最後に見つかった出典（source）をすべて、 `(参考: ファイル名1, ファイル名2)` のようにカンマ区切りで付け加えてください。
 
     【参考情報】
     {context}
@@ -125,35 +162,11 @@ QA_SYSTEM_PROMPT = textwrap.dedent("""
     以上のルールを厳格に守り、『まこT』として回答してください：
 """)
 
-def get_qa_embedding(text: str, task_type="RETRIEVAL_QUERY") -> list[float]:
-    """Q&A検索用のテキストをベクトルに変換する"""
-    try:
-        result = genai.embed_content(model=embedding_model, content=text, task_type=task_type)
-        return result['embedding']
-    except Exception as e:
-        print(f"QAベクトル化エラー: {e}")
-        return []
-
 def expand_query(question: str) -> list[str]:
     """LLMを使って質問を複数の表現に拡張する"""
     prompt = textwrap.dedent(f"""
         ユーザーの質問を、ベクトル検索でよりヒットしやすくなるように、異なる視点から3つの類義質問や検索キーワードに書き換えてください。
         元の質問も必ず含めてください。箇条書き（ハイフン区切り）で、説明は不要です。
-        
-        例1:
-        質問: 料金の支払いについて教えて
-        書き換え:
-        - 料金の支払いについて教えて
-        - 料金の算定および支払い方法
-        - 支払期日を過ぎた場合の延滞利息
-        
-        例2:
-        質問: FRT要件って何ですか？
-        書き換え:
-        - FRT要件って何ですか？
-        - 事故時運転継続要件の定義
-        - FRT要件を満たすための条件
-        
         質問: {question}
         書き換え:
     """)
@@ -163,118 +176,96 @@ def expand_query(question: str) -> list[str]:
         return list(set(queries)) # 重複を削除
     except Exception as e:
         print(f"クエリ拡張エラー: {e}")
-        return [question] # 失敗した場合は元の質問だけを返す
+        return [question]
 
+def _handle_qa_request(user_input: str, user_id: str) -> str:
+    """Q&Aモードの処理を担当する"""
+    print(f"[{user_id}] Q&Aモードで実行します。")
+    try:
+        expanded_queries = expand_query(user_input)
+        print(f"  [クエリ拡張] 元の質問: '{user_input}' -> 拡張後: {expanded_queries}")
+
+        all_matches = {}
+        for query in expanded_queries:
+            query_vector = get_qa_embedding(query)
+            if not query_vector: continue
+
+            query_response = pinecone_index.query(
+                vector=query_vector, top_k=3, namespace="company-docs", include_metadata=True
+            )
+            for match in query_response['matches']:
+                if match.id not in all_matches or match.score > all_matches[match.id].score:
+                    all_matches[match.id] = match
+
+        sorted_matches = sorted(all_matches.values(), key=lambda x: x.score, reverse=True)
+        context_chunks, sources = [], set()
+        
+        print("\n--- 統合後の検索結果 ---")
+        for match in sorted_matches[:5]:
+            print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Chapter: {match.metadata.get('chapter', 'N/A')}")
+            if match.score > RAG_SCORE_THRESHOLD:
+                 context_chunks.append(f"【出典: {match.metadata['source']} / 章: {match.metadata.get('chapter', 'N/A')}】\n{match.metadata['text']}")
+                 sources.add(match.metadata['source'])
+
+        if not context_chunks: return "うーん、その情報は見当たらないですね…！ごめんなさい🥺"
+
+        context_str = "\n---\n".join(context_chunks)
+        source_str = f"(参考: {', '.join(sorted(list(sources)))})"
+        prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
+        response = text_model.generate_content(prompt)
+        reply = response.text.strip()
+        
+        if "ごめんなさい" not in reply and "参考:" not in reply: reply += f" {source_str}"
+        reply = re.sub(r'[\*`＊∗]+', '', reply)
+        return reply
+    except Exception as e:
+        print(f"Q&A処理エラー: {e}")
+        return "ごめんなさい、なんだかシステムが不調みたいです…。もう一度試してみてください！"
+
+def _handle_normal_chat(user_input: str, user_id: str) -> str:
+    """通常会話モードの処理を担当する"""
+    print(f"[{user_id}] 通常会話モードで実行します。")
+    history_key = f"chat_history:{user_id}"
+    history_json = redis_client.get(history_key)
+    history: list[str] = json.loads(history_json) if history_json else []
+
+    long_term_memory = None
+    try:
+        input_vector = get_embedding(user_input)
+        if input_vector:
+            query_response = pinecone_index.query(
+                vector=input_vector, top_k=3, namespace="conversation-memory",
+                filter={"user_id": user_id}, include_metadata=True
+            )
+            relevant_memories = [m['metadata']['text'] for m in query_response['matches'] if m['score'] > 0.7]
+            if relevant_memories:
+                long_term_memory = "\n".join(f"- {mem}" for mem in relevant_memories)
+                print(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
+    except Exception as e: print(f"記憶の検索エラー: {e}")
+
+    history.append(f"ユーザー: {user_input}")
+    context = "\n".join(history[-12:])
+    topic = guess_topic(user_input)
+    system_prompt = build_system_prompt(context, topic, user_id, long_term_memory)
+    
+    try:
+        response = text_model.generate_content(system_prompt)
+        reply = response.text.strip()
+    except Exception as e: reply = f"エラーが発生しました: {e}"
+
+    reply = post_process(reply, user_input)
+    pronoun = decide_pronoun(user_input)
+    reply = inject_pronoun(reply, pronoun)
+    history.append(f"アシスタント: {reply}")
+    redis_client.set(history_key, json.dumps(history[-50:]))
+    summarize_and_store_memory(user_id, history)
+    return reply
 
 def chat_with_makot(user_input: str, user_id: str) -> str:
+    """ユーザー入力に応じてQ&Aモードか通常会話モードかを振り分ける"""
     QA_TRIGGERS = ["教えて", "説明して", "規定", "ルール", "方法", "って何", "とは", "について", "の条件"]
     is_qa_mode = any(trigger in user_input for trigger in QA_TRIGGERS)
-
-    if is_qa_mode:
-        print(f"[{user_id}] Q&Aモードで実行します。")
-        try:
-            expanded_queries = expand_query(user_input)
-            print(f"  [クエリ拡張] 元の質問: '{user_input}' -> 拡張後: {expanded_queries}")
-
-            all_matches = {}
-            for query in expanded_queries:
-                query_vector = get_qa_embedding(query)
-                if not query_vector: continue
-
-                query_response = pinecone_index.query(
-                    vector=query_vector,
-                    top_k=3,
-                    namespace="company-docs",
-                    include_metadata=True
-                )
-                for match in query_response['matches']:
-                    if match.id not in all_matches or match.score > all_matches[match.id].score:
-                        all_matches[match.id] = match
-
-            sorted_matches = sorted(all_matches.values(), key=lambda x: x.score, reverse=True)
-
-            context_chunks = []
-            sources = set()
-            
-            print("\n--- 統合後の検索結果 ---")
-            for match in sorted_matches[:5]:
-                # ★★★ ログ出力を強化し、章の情報も表示 ★★★
-                print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Chapter: {match.metadata.get('chapter', 'N/A')}, Title: {match.metadata.get('title', 'N/A')}")
-                if match.score > 0.55:
-                     # ★★★ LLMに与えるコンテキストに「章」の情報も追加 ★★★
-                     context_chunks.append(f"【出典: {match.metadata['source']} / 章: {match.metadata.get('chapter', 'N/A')} / 見出し: {match.metadata.get('title', 'N/A')}】\n{match.metadata['text']}")
-                     sources.add(match.metadata['source'])
-
-            if not context_chunks:
-                return "うーん、その情報は見当たらないですね…！ごめんなさい🥺"
-
-            context_str = "\n---\n".join(context_chunks)
-            source_str = f"(参考: {', '.join(sorted(list(sources)))})"
-
-            prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
-            response = text_model.generate_content(prompt)
-            reply = response.text.strip()
-            
-            if "ごめんなさい" not in reply and "参考:" not in reply:
-                reply += f" {source_str}"
-
-            # ★★★ 修正箇所 ★★★
-            # Q&Aモードの回答に含まれるMarkdown記法(*, `)も除去する
-            reply = re.sub(r'[\*`＊∗]+', '', reply)
-            
-            return reply
-
-        except Exception as e:
-            print(f"Q&A処理エラー: {e}")
-            return "ごめんなさい、なんだかシステムが不調みたいです…。もう一度試してみてください！"
-
-    else:
-        # --- 通常会話モード (変更なし) ---
-        print(f"[{user_id}] 通常会話モードで実行します。")
-        history_key = f"chat_history:{user_id}"
-        history_json = redis_client.get(history_key)
-        history: list[str] = json.loads(history_json) if history_json else []
-
-        long_term_memory = None
-        try:
-            input_vector = get_embedding(user_input)
-            if input_vector:
-                query_response = pinecone_index.query(
-                    vector=input_vector,
-                    top_k=3,
-                    namespace="conversation-memory",
-                    filter={"user_id": user_id},
-                    include_metadata=True
-                )
-                relevant_memories = [match['metadata']['text'] for match in query_response['matches'] if match['score'] > 0.7]
-                if relevant_memories:
-                    long_term_memory = "\n".join(f"- {mem}" for mem in relevant_memories)
-                    print(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
-        except Exception as e:
-            print(f"記憶の検索エラー: {e}")
-
-        history.append(f"ユーザー: {user_input}")
-        context = "\n".join(history[-12:])
-        topic = guess_topic(user_input)
-        system_prompt = build_system_prompt(
-            context=context, topic=topic, user_id=user_id, long_term_memory=long_term_memory
-        )
-        
-        try:
-            response = text_model.generate_content(system_prompt)
-            reply = response.text.strip()
-        except Exception as e:
-            reply = f"エラーが発生しました: {e}"
-
-        reply = post_process(reply, user_input)
-        pronoun = decide_pronoun(user_input)
-        reply = inject_pronoun(reply, pronoun)
-        history.append(f"アシスタント: {reply}")
-
-        redis_client.set(history_key, json.dumps(history[-50:]))
-        summarize_and_store_memory(user_id, history)
-
-        return reply
+    return _handle_qa_request(user_input, user_id) if is_qa_mode else _handle_normal_chat(user_input, user_id)
 
 # ------------------------------------------------------------
 # ユーティリティ & Webhookハンドラ
@@ -286,46 +277,19 @@ def guess_topic(text: str):
     if any(k in text for k in work_keys): return "work"
     return None
 def decide_pronoun(user_text: str) -> str:
-    high_hit = any(k in user_text for k in MAKOT["emotion_triggers"]["high"])
-    if not high_hit: return "私"
-    return "マコ" if random.random() < 0.10 else "おに"
+    return "マコ" if random.random() < 0.10 else "おに" if any(k in user_text for k in MAKOT["emotion_triggers"]["high"]) else "私"
 def inject_pronoun(reply: str, pronoun: str) -> str: return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
 def post_process(reply: str, user_input: str) -> str:
-    high = any(t in user_input for t in MAKOT["emotion_triggers"]["high"])
-    low  = any(t in user_input for t in MAKOT["emotion_triggers"]["low"])
-    if high: reply = apply_expression_style(reply, mood="high")
-    elif low: reply += " 🥺"
-
-    reply = re.sub(r'[\*`＊∗]+', '', reply) # Markdown記法 **, *, ` を除去
-
-    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
-        reply += " しらんけど"
-    
+    if any(t in user_input for t in MAKOT["emotion_triggers"]["high"]): reply = apply_expression_style(reply, mood="high")
+    elif any(t in user_input for t in MAKOT["emotion_triggers"]["low"]): reply += " 🥺"
+    reply = re.sub(r'[\*`＊∗]+', '', reply)
+    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4: reply += " しらんけど"
     reply_sentences = re.split(r'([。！？])', reply)
     if len(reply_sentences) > 5:
-        processed_reply = ""
-        count = 0
-        for i in range(0, len(reply_sentences), 2):
-            if i+1 < len(reply_sentences):
-                processed_reply += reply_sentences[i] + reply_sentences[i+1]
-            else:
-                processed_reply += reply_sentences[i]
-            count += 1
-            if count >= 2: break # 2文でカット
+        processed_reply = "".join(reply_sentences[:4])
         reply = processed_reply
-    
     return reply
-def get_gcp_token() -> str:
-    if gcp_token_cache["token"] and time.time() < gcp_token_cache["expires_at"]: return gcp_token_cache["token"]
-    if not GCP_CREDENTIALS_JSON_STR: raise ValueError("GCP_CREDENTIALS_JSON 環境変数が設定されていません。")
-    try:
-        credentials_info = json.loads(GCP_CREDENTIALS_JSON_STR); creds = service_account.Credentials.from_service_account_info(credentials_info, scopes=["https://www.googleapis.com/auth/cloud-platform"])
-        creds.refresh(Request());
-        if not creds.token: raise ValueError("トークンの取得に失敗しました。")
-        gcp_token_cache["token"] = creds.token; gcp_token_cache["expires_at"] = time.time() + 3300
-        return creds.token
-    except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
 def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
     if not client_id: raise Exception("Imgur Client IDが設定されていません。")
     url = "https://api.imgur.com/3/image"; headers = {"Authorization": f"Client-ID {client_id}"}
@@ -337,16 +301,14 @@ def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
 def translate_to_english(text: str) -> str:
     if not text: return "a cute girl"
     try:
-        prompt = f"Translate the following Japanese into a simple English phrase for an image generation AI. For example, '猫' -> 'a cat', '空を飛ぶ犬' -> 'a dog flying in the sky'. Do not add any extra explanation. Just the translated phrase.\nJapanese: {text}\nEnglish:"
-        response = text_model.generate_content(prompt); translated_text = response.text.strip().replace('"', '')
-        return translated_text
+        prompt = f"Translate the following Japanese into a simple English phrase for an image generation AI. Just the translated phrase.\nJapanese: {text}\nEnglish:"
+        response = text_model.generate_content(prompt); return response.text.strip().replace('"', '')
     except Exception as e: print(f"翻訳でエラーが発生: {e}"); return text
 def generate_image_with_rest_api(prompt: str) -> str:
     token = get_gcp_token(); endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
-    trigger_words = ["画像", "イラスト", "描いて", "絵を"]; clean_prompt = prompt
-    for word in trigger_words: clean_prompt = clean_prompt.replace(word, "")
-    clean_prompt = clean_prompt.strip(); english_prompt = translate_to_english(clean_prompt); final_prompt = f"anime style illustration, masterpiece, best quality, {english_prompt}"
+    trigger_words = ["画像", "イラスト", "描いて", "絵を"]; clean_prompt = re.sub("|".join(trigger_words), "", prompt).strip()
+    english_prompt = translate_to_english(clean_prompt); final_prompt = f"anime style illustration, masterpiece, best quality, {english_prompt}"
     data = {"instances": [{"prompt": final_prompt}], "parameters": {"sampleCount": 1, "aspectRatio": "1:1", "negativePrompt": "low quality, bad hands, text, watermark, signature"}}
     response = requests.post(endpoint_url, headers=headers, json=data); response.raise_for_status(); response_data = response.json()
     if "predictions" not in response_data or not response_data["predictions"]:
@@ -363,9 +325,8 @@ def line_webhook():
 
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
-    src_type = event.source.type; user_text = event.message.text
-    if src_type in ["group", "room"] and not is_bot_mentioned(user_text): return
-    user_id = event.source.user_id
+    user_id = event.source.user_id; user_text = event.message.text
+    if event.source.type in ["group", "room"] and not is_bot_mentioned(user_text): return
     
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
@@ -392,7 +353,7 @@ def handle_image_message(event):
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
     except Exception as e:
         print(f"画像認識でエラーが発生: {e}")
-        if "support image" in str(e).lower():
+        if "support image" in str(e).lower() or "image format" in str(e).lower():
              reply_text = "ごめんなさい、今ちょっと目が悪くて画像が見れないみたいです…🥺 また今度見せてください！"
         else:
              reply_text = "ごめんなさい、画像がうまく見れなかったです…🥺"
