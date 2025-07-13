@@ -15,7 +15,7 @@
   "crons": [
     {
       "path": "/push/monday",
-      "schedule": "23 13 * * *"  
+      "schedule": "30 13 * * *"  
     },
     {
       "path": "/push/friday",
