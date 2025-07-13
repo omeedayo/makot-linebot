@@ -23,7 +23,6 @@ from linebot.models import (
 
 # --- AI & Cloud Libraries ---
 import google.generativeai as genai
-from google.generativeai.types import HarmCategory, HarmBlockThreshold
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 import redis
@@ -50,28 +49,15 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
 PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
+# ★★★ モデル名を環境変数から読み込むように変更 ★★★
 TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 
+
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-
-# --- AI Models ---
-tools = [genai.Tool.from_google_search(google_search=genai.GoogleSearch())]
-text_model = genai.GenerativeModel(
-    model_name=TEXT_MODEL_NAME,
-    tools=tools,
-    safety_settings={
-        HarmCategory.HARM_CATEGORY_HARASSMENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        HarmCategory.HARM_CATEGORY_HATE_SPEECH: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        HarmCategory.HARM_CATEGORY_SEXUALLY_EXPLICIT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-        HarmCategory.HARM_CATEGORY_DANGEROUS_CONTENT: HarmBlockThreshold.BLOCK_MEDIUM_AND_ABOVE,
-    }
-)
-vision_model = genai.GenerativeModel("gemini-pro-vision")
-
-
+text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
@@ -96,7 +82,7 @@ def get_gcp_token() -> str:
         if not creds.token: raise ValueError("トークンの取得に失敗しました。")
         gcp_token_cache["token"] = creds.token; gcp_token_cache["expires_at"] = time.time() + 3300
         return creds.token
-    except Exception as e: app.logger.error(f"get_gcp_tokenでエラー: {e}"); raise
+    except Exception as e: print(f"get_gcp_tokenでエラー: {e}"); raise
 
 def _get_vertex_embedding(text: str, task_type: str) -> list[float]:
     """Vertex AIのEmbeddingモデルを呼び出す共通関数"""
@@ -112,12 +98,12 @@ def _get_vertex_embedding(text: str, task_type: str) -> list[float]:
         response.raise_for_status()
         response_data = response.json()
         if "predictions" not in response_data or not response_data["predictions"]:
-             app.logger.warning(f"Vertex AIからembeddingが返されませんでした: {response_data}")
+             print(f"Vertex AIからembeddingが返されませんでした: {response_data}")
              return []
         embedding = response_data["predictions"][0]["embeddings"]["values"]
         return embedding
     except Exception as e:
-        app.logger.error(f"Vertex AI ベクトル化エラー: {e}")
+        print(f"Vertex AI ベクトル化エラー: {e}")
         return []
 
 def get_embedding(text: str) -> list[float]:
@@ -151,9 +137,9 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
             memory_id = str(uuid.uuid4())
             metadata = { "user_id": user_id, "text": summary, "created_at": time.time() }
             pinecone_index.upsert(vectors=[(memory_id, vector, metadata)], namespace="conversation-memory")
-            app.logger.info(f"[{user_id}] の新しい記憶をベクトルDBに保存しました: {summary}")
+            print(f"[{user_id}] の新しい記憶をベクトルDBに保存しました: {summary}")
     except Exception as e:
-        app.logger.error(f"記憶の保存処理でエラー: {e}")
+        print(f"記憶の保存処理でエラー: {e}")
 
 # ------------------------------------------------------------
 # Q&Aモードと通常会話モードの処理
@@ -187,17 +173,17 @@ def expand_query(question: str) -> list[str]:
     try:
         response = text_model.generate_content(prompt)
         queries = [line.strip().lstrip('- ') for line in response.text.strip().split('\n') if line.strip()]
-        return list(set(queries))
+        return list(set(queries)) # 重複を削除
     except Exception as e:
-        app.logger.error(f"クエリ拡張エラー: {e}")
+        print(f"クエリ拡張エラー: {e}")
         return [question]
 
 def _handle_qa_request(user_input: str, user_id: str) -> str:
     """Q&Aモードの処理を担当する"""
-    app.logger.info(f"[{user_id}] Q&Aモードで実行します。")
+    print(f"[{user_id}] Q&Aモードで実行します。")
     try:
         expanded_queries = expand_query(user_input)
-        app.logger.info(f"  [クエリ拡張] 元の質問: '{user_input}' -> 拡張後: {expanded_queries}")
+        print(f"  [クエリ拡張] 元の質問: '{user_input}' -> 拡張後: {expanded_queries}")
 
         all_matches = {}
         for query in expanded_queries:
@@ -214,7 +200,9 @@ def _handle_qa_request(user_input: str, user_id: str) -> str:
         sorted_matches = sorted(all_matches.values(), key=lambda x: x.score, reverse=True)
         context_chunks, sources = [], set()
         
+        print("\n--- 統合後の検索結果 ---")
         for match in sorted_matches[:5]:
+            print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Chapter: {match.metadata.get('chapter', 'N/A')}")
             if match.score > RAG_SCORE_THRESHOLD:
                  context_chunks.append(f"【出典: {match.metadata['source']} / 章: {match.metadata.get('chapter', 'N/A')}】\n{match.metadata['text']}")
                  sources.add(match.metadata['source'])
@@ -231,12 +219,12 @@ def _handle_qa_request(user_input: str, user_id: str) -> str:
         reply = re.sub(r'[\*`＊∗]+', '', reply)
         return reply
     except Exception as e:
-        app.logger.error(f"Q&A処理エラー: {e}")
+        print(f"Q&A処理エラー: {e}")
         return "ごめんなさい、なんだかシステムが不調みたいです…。もう一度試してみてください！"
 
-def _handle_normal_chat(user_input: str, user_id: str, search_enabled: bool = False) -> str:
+def _handle_normal_chat(user_input: str, user_id: str) -> str:
     """通常会話モードの処理を担当する"""
-    app.logger.info(f"[{user_id}] 通常会話モードで実行します。")
+    print(f"[{user_id}] 通常会話モードで実行します。")
     history_key = f"chat_history:{user_id}"
     history_json = redis_client.get(history_key)
     history: list[str] = json.loads(history_json) if history_json else []
@@ -252,37 +240,18 @@ def _handle_normal_chat(user_input: str, user_id: str, search_enabled: bool = Fa
             relevant_memories = [m['metadata']['text'] for m in query_response['matches'] if m['score'] > 0.7]
             if relevant_memories:
                 long_term_memory = "\n".join(f"- {mem}" for mem in relevant_memories)
-                app.logger.info(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
-    except Exception as e: app.logger.error(f"記憶の検索エラー: {e}")
+                print(f"[{user_id}] の関連記憶を検索: {long_term_memory}")
+    except Exception as e: print(f"記憶の検索エラー: {e}")
 
     history.append(f"ユーザー: {user_input}")
     context = "\n".join(history[-12:])
     topic = guess_topic(user_input)
     system_prompt = build_system_prompt(context, topic, user_id, long_term_memory)
     
-    contents = [
-        genai.Content(
-            parts=[
-                genai.Part.from_text(system_prompt),
-                genai.Part.from_text(f"\n\nユーザー: {user_input}\nアシスタント:")
-            ]
-        )
-    ]
-    
     try:
-        tool_config = {"google_search_retrieval": "google" if search_enabled else "off"}
-        response = text_model.generate_content(contents=contents, tool_config=tool_config)
-
-        try:
-            if response.candidates[0].finish_reason.name == "TOOL_CODE":
-                app.logger.info(f"[{user_id}] Web検索が実行されました。")
-        except (AttributeError, IndexError):
-            pass
-
+        response = text_model.generate_content(system_prompt)
         reply = response.text.strip()
-    except Exception as e:
-        reply = f"エラーが発生しました: {e}"
-        app.logger.error(f"Gemini APIエラー: {e}")
+    except Exception as e: reply = f"エラーが発生しました: {e}"
 
     reply = post_process(reply, user_input)
     pronoun = decide_pronoun(user_input)
@@ -295,17 +264,8 @@ def _handle_normal_chat(user_input: str, user_id: str, search_enabled: bool = Fa
 def chat_with_makot(user_input: str, user_id: str) -> str:
     """ユーザー入力に応じてQ&Aモードか通常会話モードかを振り分ける"""
     QA_TRIGGERS = ["教えて", "説明して", "規定", "ルール", "方法", "って何", "とは", "について", "の条件"]
-    SEARCH_TRIGGERS = ["検索して", "調べて", "どうなった", "ニュース", "最新"]
-
     is_qa_mode = any(trigger in user_input for trigger in QA_TRIGGERS)
-    is_search_mode = any(trigger in user_input for trigger in SEARCH_TRIGGERS)
-
-    if is_qa_mode:
-        return _handle_qa_request(user_input, user_id)
-    elif is_search_mode:
-        return _handle_normal_chat(user_input, user_id, search_enabled=True)
-    else:
-        return _handle_normal_chat(user_input, user_id, search_enabled=False)
+    return _handle_qa_request(user_input, user_id) if is_qa_mode else _handle_normal_chat(user_input, user_id)
 
 # ------------------------------------------------------------
 # ユーティリティ & Webhookハンドラ
@@ -343,7 +303,7 @@ def translate_to_english(text: str) -> str:
     try:
         prompt = f"Translate the following Japanese into a simple English phrase for an image generation AI. Just the translated phrase.\nJapanese: {text}\nEnglish:"
         response = text_model.generate_content(prompt); return response.text.strip().replace('"', '')
-    except Exception as e: app.logger.error(f"翻訳でエラーが発生: {e}"); return text
+    except Exception as e: print(f"翻訳でエラーが発生: {e}"); return text
 def generate_image_with_rest_api(prompt: str) -> str:
     token = get_gcp_token(); endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
@@ -365,25 +325,7 @@ def line_webhook():
 
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
-    user_id = event.source.user_id
-    user_text = event.message.text
-    
-    # ★★★ ここからが修正箇所(1) ★★★
-    if user_text == "お知らせ登録":
-        # RedisのSetにユーザーIDを追加（重複は自動で無視される）
-        redis_client.sadd("registered_users", user_id)
-        reply_text = "お知らせを登録しました！月曜と金曜にメッセージを送りますね🥰"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-        return # これ以降の処理はしない
-
-    if user_text == "お知らせ解除":
-        # RedisのSetからユーザーIDを削除
-        redis_client.srem("registered_users", user_id)
-        reply_text = "お知らせを解除しました。また登録してくださいね！"
-        line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-        return # これ以降の処理はしない
-    # ★★★ ここまでが修正箇所(1) ★★★
-
+    user_id = event.source.user_id; user_text = event.message.text
     if event.source.type in ["group", "room"] and not is_bot_mentioned(user_text): return
     
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
@@ -393,10 +335,9 @@ def handle_text_message(event):
             msg = ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
             line_bot_api.push_message(user_id, msg)
         except Exception as e:
-            app.logger.error(f"画像生成でエラーが発生: {e}")
+            print(f"画像生成でエラーが発生: {e}")
             line_bot_api.push_message(user_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪いみたいです…\n理由: {e}"))
         return
-        
     reply_text = chat_with_makot(user_text, user_id=user_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
@@ -406,12 +347,12 @@ def handle_image_message(event):
         message_content = line_bot_api.get_message_content(event.message.id)
         image_bytes = message_content.content
         makot_prompt = "あなたは後輩女子の『まこT』です。ユーザーから送られてきたこの画像を見て、最高のリアクションを1～2文で返してください！食べ物なら「おいしそう！」、動物なら「かわいい！」など、見たままの感情をテンション高めに表現してください。"
-        response = vision_model.generate_content([makot_prompt, {"mime_type": "image/jpeg", "data": image_bytes}])
+        response = text_model.generate_content([makot_prompt, {"mime_type": "image/jpeg", "data": image_bytes}])
         reply_text = response.text.strip()
         reply_text = post_process(reply_text, "テンション上がる")
         line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
     except Exception as e:
-        app.logger.error(f"画像認識でエラーが発生: {e}")
+        print(f"画像認識でエラーが発生: {e}")
         if "support image" in str(e).lower() or "image format" in str(e).lower():
              reply_text = "ごめんなさい、今ちょっと目が悪くて画像が見れないみたいです…🥺 また今度見せてください！"
         else:
@@ -425,52 +366,6 @@ def handle_sticker_message(event):
     reply_text = sticker_map.get(str(package_id), {}).get(str(sticker_id))
     if not reply_text: reply_text = random.choice(["スタンプありがとうございます！🥰", "そのスタンプかわいいですね！", "お、いいスタンプ！私もほしいです！"])
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
-
-# ★★★ ここからが修正箇所(2) ★★★
-@app.route("/cron/send_weekly_message", methods=["GET"])
-def send_weekly_message():
-    """月曜の朝と金曜の夜に定期メッセージを送信するCron Job"""
-    # クエリパラメータから曜日を取得
-    day = request.args.get('day')
-    
-    if day == 'monday':
-        # 月曜日のメッセージ
-        messages = [
-            "月曜日が始まりましたね！今週も適当に頑張りましょー！🥰",
-            "げ、月曜日だ…。今週も無理せず、ほどほどにいきましょうね！",
-            "週の始まりですね！今週はいいことありますように✨",
-        ]
-        message_text = random.choice(messages)
-        log_prefix = "月曜日の定期メッセージ"
-    elif day == 'friday':
-        # 金曜日のメッセージ
-        messages = [
-            "一週間お疲れ様でしたー！🎉 良い週末を！",
-            "お疲れ様です！華金ですね！ふぁーーーーーーーーーーーｗｗｗｗｗｗｗ",
-            "今週もお疲れ様でした！ゆっくり休んでくださいね🥰",
-        ]
-        message_text = random.choice(messages)
-        log_prefix = "金曜日の定期メッセージ"
-    else:
-        app.logger.warning(f"不明なdayパラメータ: {day}")
-        return "Invalid day parameter", 400
-
-    try:
-        # Redisから登録されている全ユーザーIDを取得
-        user_ids = list(redis_client.smembers("registered_users"))
-        if not user_ids:
-            app.logger.info("送信対象のユーザーがいません。")
-            return "No users to send", 200
-
-        # 取得した全ユーザーにメッセージを送信（Multicast APIを使用）
-        line_bot_api.multicast(user_ids, TextSendMessage(text=message_text))
-        
-        app.logger.info(f"{log_prefix}を {len(user_ids)} 人に送信しました。")
-        return "Messages sent successfully", 200
-    except Exception as e:
-        app.logger.error(f"{log_prefix}の送信に失敗しました: {e}")
-        return "Failed to send message", 500
-# ★★★ ここまでが修正箇所(2) ★★★
 
 @app.route("/")
 def home():

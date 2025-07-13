@@ -3,24 +3,11 @@
   "builds": [
     {
       "src": "app.py",
-      "use": "@vercel/python",
-      "config": {
-        "build": "pip install --upgrade -r requirements.txt"
-      }
+      "use": "@vercel/python"
     }
   ],
   "routes": [
     { "src": "/line_webhook", "dest": "app.py" },
-    { "src": "/(.*)", "dest": "app.py" }
-  ],
-  "crons": [
-    {
-      "path": "/cron/send_weekly_message?day=monday",
-      "schedule": "0 23 * * 0"
-    },
-    {
-      "path": "/cron/send_weekly_message?day=friday",
-      "schedule": "0 12 * * 5"
-    }
+    { "src": "/(.*)",        "dest": "app.py" }
   ]
 }
