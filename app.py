@@ -325,8 +325,8 @@ def line_webhook():
     except InvalidSignatureError: return "Invalid signature", 400
     return "OK", 200
 
-# ★★★ ここから追加 ★★★
-@app.route("/push/monday", methods=["POST"])
+# ★★★ ここから変更 ★★★
+@app.route("/push/monday", methods=["GET", "POST"])
 def push_monday_message():
     # Vercel Cron Jobからのリクエストを認証
     auth_header = request.headers.get('Authorization')
@@ -342,13 +342,16 @@ def push_monday_message():
 
         message = TextSendMessage(text="月曜日ですね！今週も頑張っていきましょー！💪")
         
-        for user_id in user_ids:
-            try:
-                line_bot_api.push_message(user_id, message)
-                time.sleep(0.1) # 短時間に大量送信する際のスロットリング対策
-            except Exception as e:
-                print(f"ユーザーID: {user_id} へのプッシュメッセージ送信に失敗: {e}")
+        # マルチキャスト送信（一度に最大150人まで送信可能）
+        # ユーザーIDを150人ずつのチャンクに分割
+        user_id_chunks = [list(user_ids)[i:i + 150] for i in range(0, len(user_ids), 150)]
         
+        for chunk in user_id_chunks:
+            try:
+                line_bot_api.multicast(chunk, message)
+            except Exception as e:
+                print(f"マルチキャスト送信に失敗: {e}")
+
         print(f"{len(user_ids)} 人のユーザーに月曜日のメッセージを送信しました。")
         return "OK", 200
 
@@ -356,7 +359,7 @@ def push_monday_message():
         print(f"月曜日のプッシュメッセージ送信処理でエラー: {e}")
         return "Internal Server Error", 500
 
-@app.route("/push/friday", methods=["POST"])
+@app.route("/push/friday", methods=["GET", "POST"])
 def push_friday_message():
     # Vercel Cron Jobからのリクエストを認証
     auth_header = request.headers.get('Authorization')
@@ -372,12 +375,15 @@ def push_friday_message():
 
         message = TextSendMessage(text="金曜日！今週もお疲れ様でした🍻 よい週末を〜🥰")
 
-        for user_id in user_ids:
+        # マルチキャスト送信
+        user_id_chunks = [list(user_ids)[i:i + 150] for i in range(0, len(user_ids), 150)]
+
+        for chunk in user_id_chunks:
             try:
-                line_bot_api.push_message(user_id, message)
-                time.sleep(0.1) # 短時間に大量送信する際のスロットリング対策
+                line_bot_api.multicast(chunk, message)
             except Exception as e:
-                print(f"ユーザーID: {user_id} へのプッシュメッセージ送信に失敗: {e}")
+                print(f"マルチキャスト送信に失敗: {e}")
+
 
         print(f"{len(user_ids)} 人のユーザーに金曜日のメッセージを送信しました。")
         return "OK", 200
@@ -385,7 +391,7 @@ def push_friday_message():
     except Exception as e:
         print(f"金曜日のプッシュメッセージ送信処理でエラー: {e}")
         return "Internal Server Error", 500
-# ★★★ ここまで追加 ★★★
+# ★★★ ここまで変更 ★★★
 
 
 @webhook_handler.add(MessageEvent, message=TextMessage)
