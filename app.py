@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ4: トレンド検索・コマンド対応版 - 修正版3)
+# app.py (ステップ4: トレンド検索・コマンド対応版 - 修正版4)
 # ============================================================
 
 import os
@@ -23,7 +23,6 @@ from linebot.models import (
 
 # --- AI & Cloud Libraries ---
 import google.generativeai as genai
-from google.generativeai.tool import Tool
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 import redis
@@ -58,10 +57,10 @@ CRON_SECRET               = os.getenv("CRON_SECRET")
 
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-# ★★★ Google検索ツールを有効にしてモデルを初期化 ★★★
+# ★★★ Google検索ツールを有効にしてモデルを初期化（正しい方法） ★★★
 text_model = genai.GenerativeModel(
     TEXT_MODEL_NAME,
-    tools=[Tool.from_google_search_retrieval(google_search_retrieval={})]
+    tools=["google_search_retrieval"]
 )
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -270,7 +269,7 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
 def _handle_search_chat(user_input: str, user_id: str) -> str:
     """Web検索を伴う会話モードの処理を担当する"""
     print(f"[{user_id}] 検索モードで実行します。 検索語: '{user_input}'")
-    
+
     try:
         # ステップ1: まずGoogle検索ツールを実行させる
         # この時点では、検索結果（Tool output）だけが返ってくる
