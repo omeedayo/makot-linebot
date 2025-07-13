@@ -3,14 +3,7 @@
   "builds": [
     {
       "src": "app.py",
-<<<<<<< HEAD
       "use": "@vercel/python"
-=======
-      "use": "@vercel/python",
-      "config": {
-        "build": "pip install --no-cache-dir --force-reinstall -r requirements.txt"
-      }
->>>>>>> 7e79bc261daae4e75bae6863ed3625a1aa318178
     }
   ],
   "routes": [
