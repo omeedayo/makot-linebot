@@ -1,0 +1,7 @@
+PyMuPDF==1.24.1
+tqdm
+google-generativeai==0.7.1
+pinecone-client==4.1.1
+python-dotenv
+requests==2.31.0
+google-auth==2.29.0
