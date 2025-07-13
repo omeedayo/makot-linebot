@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ4: トレンド検索・コマンド対応版 - 修正版4)
+# app.py (ステップ4: トレンド検索・コマンド対応版 - 最終修正版)
 # ============================================================
 
 import os
@@ -49,7 +49,7 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
 PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
-TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
+TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-1.5-flash-preview-0514")
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 CRON_SECRET               = os.getenv("CRON_SECRET")
@@ -57,11 +57,8 @@ CRON_SECRET               = os.getenv("CRON_SECRET")
 
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-# ★★★ Google検索ツールを有効にしてモデルを初期化（正しい方法） ★★★
-text_model = genai.GenerativeModel(
-    TEXT_MODEL_NAME,
-    tools=["google_search_retrieval"]
-)
+# ★★★ toolsパラメータを削除し、モデルの自動検索機能に任せる ★★★
+text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
@@ -269,31 +266,27 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
 def _handle_search_chat(user_input: str, user_id: str) -> str:
     """Web検索を伴う会話モードの処理を担当する"""
     print(f"[{user_id}] 検索モードで実行します。 検索語: '{user_input}'")
+    
+    search_prompt = textwrap.dedent(f"""
+    あなたは後輩女子『まこT』です。ユーザーからの以下の質問に回答するために、あなたに提供されているGoogle検索ツールを必ず使用してください。
+    
+    【あなたの思考プロセス】
+    1.  まず、ユーザーの質問の核心を捉え、最適な検索クエリを生成します。
+    2.  次に、そのクエリを使ってWeb検索を実行します。
+    3.  そして、得られた検索結果の情報**だけ**を使って、回答を作成します。検索結果以外の知識は使用しません。
 
+    【回答の形式】
+    *   重要なポイントを2～3点に絞って、箇条書きなどで分かりやすく要約してください。
+    *   回答は、まこTの明るく親しみやすいキャラクター（例：「～ですよ！」「～みたいです！🥰」）で、150文字程度で簡潔にまとめてください。
+    *   検索しても情報が見つからなかった場合は、「ごめんなさい、その情報は見つかりませんでした…🥺」と正直に回答してください。
+
+    【ユーザーの質問】
+    「{user_input}」について教えてください。
+    """)
+    
     try:
-        # ステップ1: まずGoogle検索ツールを実行させる
-        # この時点では、検索結果（Tool output）だけが返ってくる
-        search_result = text_model.generate_content(user_input)
-
-        # ステップ2: 検索結果を次のプロンプトに埋め込み、要約させる
-        summarize_prompt = textwrap.dedent(f"""
-        あなたは後輩女子『まこT』です。提供された以下の【検索結果】を基に、ユーザーの質問に親しみやすく、分かりやすく要約して回答してください。
-        
-        【重要な指示】
-        - **検索結果に書かれている情報だけを使ってください。**
-        - 重要なポイントを2～3点に絞って、箇条書きなどで分かりやすく要約します。
-        - 回答は、まこTの明るく親しみやすいキャラクター（例：「～ですよ！」「～みたいです！🥰」）で、150文字程度で簡潔にまとめてください。
-        - 検索結果が「情報を取得できませんでした」など、内容が乏しい場合は、「ごめんなさい、その情報は見つかりませんでした…🥺」と正直に回答してください。
-
-        【検索結果】
-        {search_result.text}
-        
-        【元のユーザーの質問】
-        {user_input}
-        """)
-
-        # 検索結果を使った要約生成では、ツールを無効にする
-        response = text_model.generate_content(summarize_prompt, tools=[])
+        # モデルに検索と回答生成を依頼
+        response = text_model.generate_content(search_prompt)
         reply = response.text.strip()
         
         reply = post_process(reply, "テンション上がる")
