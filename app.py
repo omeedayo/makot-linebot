@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ4: トレンド検索・コマンド対応版 - 最終修正版 v2)
+# app.py (ステップ4: トレンド検索・コマンド対応版 - 最終版)
 # ============================================================
 
 import os
@@ -25,6 +25,7 @@ from linebot.models import (
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
+from googleapiclient.discovery import build # ★★★ Google検索APIのために追加 ★★★
 import redis
 import pinecone
 from dotenv import load_dotenv
@@ -49,15 +50,17 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
 PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
-TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
+TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-1.5-flash-preview-0514")
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 CRON_SECRET               = os.getenv("CRON_SECRET")
+# ★★★ Google検索API用の環境変数を追加 ★★★
+GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
+SEARCH_ENGINE_ID      = os.getenv("SEARCH_ENGINE_ID")
 
 
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-# ★★★ モデルの自動検索機能に任せるため、toolsパラメータは削除 ★★★
 text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -264,25 +267,33 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
     return reply
 
 def _handle_search_chat(user_input: str, user_id: str) -> str:
-    """Web検索を伴う会話モードの処理を担当する（確実な2段階方式）"""
+    """Google Custom Search API を使ってWeb検索を行う"""
     print(f"[{user_id}] 検索モードで実行します。 検索語: '{user_input}'")
-    
+
+    if not GOOGLE_SEARCH_API_KEY or not SEARCH_ENGINE_ID:
+        return "ごめんなさい、検索機能が設定されていないみたいです…🥺"
+
     try:
-        # ステップ1: まずGoogle検索ツールを実行させる
-        print("  [ステップ1] 検索を実行します...")
-        # モデルに検索を実行させるためのプロンプト
-        search_request_prompt = f"「{user_input}」についてGoogleで検索して"
-        search_result_response = text_model.generate_content(search_request_prompt)
+        # ステップ1: Google Custom Search APIで検索を実行
+        print("  [ステップ1] Google Custom Search APIで検索を実行します...")
+        search_service = build("customsearch", "v1", developerKey=GOOGLE_SEARCH_API_KEY)
+        result = search_service.cse().list(q=user_input, cx=SEARCH_ENGINE_ID, num=5).execute()
+        
+        # 検索結果を整形
+        if 'items' not in result or not result['items']:
+            return "うーん、関連する情報が見つかりませんでした…！ごめんなさい🥺"
+            
+        context_chunks = []
+        for i, item in enumerate(result['items']):
+            title = item.get('title', 'No Title')
+            snippet = item.get('snippet', 'No Snippet').replace('\n', '')
+            link = item.get('link', '')
+            context_chunks.append(f"【検索結果{i+1}】\nタイトル: {title}\n要約: {snippet}\nURL: {link}")
+        
+        search_context = "\n\n".join(context_chunks)
+        print(f"  [ステップ1完了] 検索コンテキストを生成しました。")
 
-        # モデルがツールを使った場合、その出力内容を取得
-        try:
-            tool_output_text = search_result_response.text
-            print(f"  [ステップ1完了] 検索結果の一部を取得: {tool_output_text[:100]}...")
-        except (IndexError, AttributeError, KeyError) as e:
-             print(f"  [ステップ1] 検索結果の取得に失敗: {e}")
-             tool_output_text = "情報を取得できませんでした"
-
-        # ステップ2: 検索結果を基に要約を生成させる
+        # ステップ2: 検索結果を基に要約を生成
         print("  [ステップ2] 要約を生成します...")
         summarize_prompt = textwrap.dedent(f"""
         あなたは後輩女子『まこT』です。提供された以下の【Web検索結果】を基に、ユーザーの質問に親しみやすく、分かりやすく要約して回答してください。
@@ -291,16 +302,16 @@ def _handle_search_chat(user_input: str, user_id: str) -> str:
         - **【Web検索結果】に書かれている情報だけを使ってください。**
         - 重要なポイントを2～3点に絞って、箇条書きなどで分かりやすく要約します。
         - 回答は、まこTの明るく親しみやすいキャラクター（例：「～ですよ！」「～みたいです！🥰」）で、150文字程度で簡潔にまとめてください。
-        - 【Web検索結果】が「情報を取得できませんでした」など、内容が乏しい場合は、「ごめんなさい、その情報は見つかりませんでした…🥺」と正直に回答してください。
+        - 検索結果が乏しい場合は、無理にまとめず「〇〇については、こんな情報がありました！」のように、見つかった情報を素直に伝える形で回答してください。
 
         【Web検索結果】
-        {tool_output_text}
+        {search_context}
         
         【元のユーザーの質問】
         {user_input}
         """)
-        
-        # 検索結果を使った要約生成では、ツールを無効にする
+
+        # 要約生成ではツールは不要
         response = text_model.generate_content(summarize_prompt, tools=[])
         reply = response.text.strip()
         
