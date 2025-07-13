@@ -1,6 +1,6 @@
 flask==3.0.2
 line-bot-sdk==3.8.0
-google-generativeai>=0.8.0  # ← この行を修正
+google-generativeai==0.8.0
 requests==2.31.0
 google-auth==2.29.0
 redis==5.0.4
