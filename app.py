@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ4: トレンド検索・コマンド対応版 - 最終版)
+# app.py (ステップ4: トレンド検索・コマンド対応版 - 文字数制限緩和)
 # ============================================================
 
 import os
@@ -25,7 +25,7 @@ from linebot.models import (
 import google.generativeai as genai
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
-from googleapiclient.discovery import build # ★★★ Google検索APIのために追加 ★★★
+from googleapiclient.discovery import build
 import redis
 import pinecone
 from dotenv import load_dotenv
@@ -54,7 +54,6 @@ TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-previ
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 CRON_SECRET               = os.getenv("CRON_SECRET")
-# ★★★ Google検索API用の環境変数を追加 ★★★
 GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
 SEARCH_ENGINE_ID      = os.getenv("SEARCH_ENGINE_ID")
 
@@ -315,7 +314,8 @@ def _handle_search_chat(user_input: str, user_id: str) -> str:
         response = text_model.generate_content(summarize_prompt, tools=[])
         reply = response.text.strip()
         
-        reply = post_process(reply, "テンション上がる")
+        # ★★★ 検索モードでは文字数制限をかけない ★★★
+        reply = post_process(reply, "テンション上がる", is_search=True)
         reply = re.sub(r'[\*`＊∗]+', '', reply)
         return reply
 
@@ -361,15 +361,20 @@ def decide_pronoun(user_text: str) -> str:
     return "マコ" if random.random() < 0.10 else "おに" if any(k in user_text for k in MAKOT["emotion_triggers"]["high"]) else "私"
 def inject_pronoun(reply: str, pronoun: str) -> str: return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
-def post_process(reply: str, user_input: str) -> str:
+# ★★★ is_search引数を追加 ★★★
+def post_process(reply: str, user_input: str, is_search: bool = False) -> str:
     if any(t in user_input for t in MAKOT["emotion_triggers"]["high"]): reply = apply_expression_style(reply, mood="high")
     elif any(t in user_input for t in MAKOT["emotion_triggers"]["low"]): reply += " 🥺"
     reply = re.sub(r'[\*`＊∗]+', '', reply)
     if any(w in reply for w in UNCERTAIN) and random.random() < 0.4: reply += " しらんけど"
-    reply_sentences = re.split(r'([。！？])', reply)
-    if len(reply_sentences) > 5:
-        processed_reply = "".join(reply_sentences[:4])
-        reply = processed_reply
+    
+    # ★★★ 検索モードでない場合のみ文字数制限を適用 ★★★
+    if not is_search:
+        reply_sentences = re.split(r'([。！？])', reply)
+        if len(reply_sentences) > 5:
+            processed_reply = "".join(reply_sentences[:4])
+            reply = processed_reply
+            
     return reply
 def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
     if not client_id: raise Exception("Imgur Client IDが設定されていません。")
