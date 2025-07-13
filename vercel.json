@@ -15,12 +15,10 @@
   "crons": [
     {
       "path": "/push/monday",
-      // テスト用に UTC 12:40 (JST 21:40) に設定します。曜日は指定しません(*)
-      "schedule": "40 12 * * *"
+      "schedule": "44 12 * * *"
     },
     {
       "path": "/push/friday",
-      // こちらはテストしないのでそのままにしておきます
       "schedule": "0 12 * * 5"
     }
   ]
