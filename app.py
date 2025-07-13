@@ -334,30 +334,29 @@ def push_monday_message():
         print("Unauthorized cron request")
         return "Unauthorized", 401
     
+    user_ids = redis_client.smembers("users")
+    if not user_ids:
+        print("送信対象ユーザーがいません。")
+        return "No users to send message to.", 200
+
+    message = TextSendMessage(text="月曜日ですね！今週も頑張っていきましょー！💪")
+    
     try:
-        user_ids = redis_client.smembers("users")
-        if not user_ids:
-            print("送信対象ユーザーがいません。")
-            return "No users to send message to.", 200
-
-        message = TextSendMessage(text="月曜日ですね！今週も頑張っていきましょー！💪")
-        
-        # マルチキャスト送信（一度に最大150人まで送信可能）
-        # ユーザーIDを150人ずつのチャンクに分割
-        user_id_chunks = [list(user_ids)[i:i + 150] for i in range(0, len(user_ids), 150)]
-        
-        for chunk in user_id_chunks:
-            try:
-                line_bot_api.multicast(chunk, message)
-            except Exception as e:
-                print(f"マルチキャスト送信に失敗: {e}")
-
+        line_bot_api.multicast(list(user_ids), message)
         print(f"{len(user_ids)} 人のユーザーに月曜日のメッセージを送信しました。")
         return "OK", 200
-
     except Exception as e:
-        print(f"月曜日のプッシュメッセージ送信処理でエラー: {e}")
-        return "Internal Server Error", 500
+        print(f"LINEへのマルチキャスト送信でエラーが発生: {e}")
+        # line-bot-sdk v3からエラーの詳細を取得する方法
+        if hasattr(e, 'status_code'):
+            print(f"Status Code: {e.status_code}")
+        if hasattr(e, 'error') and hasattr(e.error, 'message'):
+            print(f"Error Message: {e.error.message}")
+        if hasattr(e, 'error') and hasattr(e.error, 'details'):
+            for detail in e.error.details:
+                print(f"  - {detail.property}: {detail.message}")
+        return "Failed to send message to LINE", 500
+
 
 @app.route("/push/friday", methods=["GET", "POST"])
 def push_friday_message():
@@ -367,30 +366,28 @@ def push_friday_message():
         print("Unauthorized cron request")
         return "Unauthorized", 401
 
+    user_ids = redis_client.smembers("users")
+    if not user_ids:
+        print("送信対象ユーザーがいません。")
+        return "No users to send message to.", 200
+
+    message = TextSendMessage(text="金曜日！今週もお疲れ様でした🍻 よい週末を〜🥰")
+
     try:
-        user_ids = redis_client.smembers("users")
-        if not user_ids:
-            print("送信対象ユーザーがいません。")
-            return "No users to send message to.", 200
-
-        message = TextSendMessage(text="金曜日！今週もお疲れ様でした🍻 よい週末を〜🥰")
-
-        # マルチキャスト送信
-        user_id_chunks = [list(user_ids)[i:i + 150] for i in range(0, len(user_ids), 150)]
-
-        for chunk in user_id_chunks:
-            try:
-                line_bot_api.multicast(chunk, message)
-            except Exception as e:
-                print(f"マルチキャスト送信に失敗: {e}")
-
-
+        line_bot_api.multicast(list(user_ids), message)
         print(f"{len(user_ids)} 人のユーザーに金曜日のメッセージを送信しました。")
         return "OK", 200
-        
     except Exception as e:
-        print(f"金曜日のプッシュメッセージ送信処理でエラー: {e}")
-        return "Internal Server Error", 500
+        print(f"LINEへのマルチキャスト送信でエラーが発生: {e}")
+        # line-bot-sdk v3からエラーの詳細を取得する方法
+        if hasattr(e, 'status_code'):
+            print(f"Status Code: {e.status_code}")
+        if hasattr(e, 'error') and hasattr(e.error, 'message'):
+            print(f"Error Message: {e.error.message}")
+        if hasattr(e, 'error') and hasattr(e.error, 'details'):
+            for detail in e.error.details:
+                print(f"  - {detail.property}: {detail.message}")
+        return "Failed to send message to LINE", 500
 # ★★★ ここまで変更 ★★★
 
 
