@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ4: トレンド検索・コマンド対応版 - 修正版)
+# app.py (ステップ4: トレンド検索・コマンド対応版 - 修正版2)
 # ============================================================
 
 import os
@@ -49,7 +49,7 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
 PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
-TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
+TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-1.5-flash-preview-0514")
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 CRON_SECRET               = os.getenv("CRON_SECRET")
@@ -57,7 +57,6 @@ CRON_SECRET               = os.getenv("CRON_SECRET")
 
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-# ★★★ toolsパラメータを削除し、シンプルな初期化に戻す ★★★
 text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
@@ -128,7 +127,7 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
         ---
         要約:""")
     try:
-        summary_response = text_model.generate_content(summary_prompt)
+        summary_response = text_model.generate_content(summary_prompt, tools=[])
         summary = summary_response.text.strip()
 
         if summary and "特になし" not in summary:
@@ -172,7 +171,7 @@ def expand_query(question: str) -> list[str]:
         書き換え:
     """)
     try:
-        response = text_model.generate_content(prompt)
+        response = text_model.generate_content(prompt, tools=[])
         queries = [line.strip().lstrip('- ') for line in response.text.strip().split('\n') if line.strip()]
         return list(set(queries)) # 重複を削除
     except Exception as e:
@@ -213,7 +212,7 @@ def _handle_qa_request(user_input: str, user_id: str) -> str:
         context_str = "\n---\n".join(context_chunks)
         source_str = f"(参考: {', '.join(sorted(list(sources)))})"
         prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
-        response = text_model.generate_content(prompt)
+        response = text_model.generate_content(prompt, tools=[])
         reply = response.text.strip()
         
         if "ごめんなさい" not in reply and "参考:" not in reply: reply += f" {source_str}"
@@ -267,18 +266,23 @@ def _handle_search_chat(user_input: str, user_id: str) -> str:
     """Web検索を伴う会話モードの処理を担当する"""
     print(f"[{user_id}] 検索モードで実行します。 検索語: '{user_input}'")
     
+    # ★★★ プロンプトをより具体的に修正 ★★★
     search_prompt = textwrap.dedent(f"""
-    あなたは後輩女子『まこT』です。ユーザーから受け取った以下の質問について、Webで最新の情報を検索し、その結果を基に親しみやすく、分かりやすく要約して回答してください。
-    - 重要なポイントを2～3点に絞って、箇条書きなどでまとめてください。
-    - 回答は150文字程度で簡潔にしてください。
-    - まこTの明るいキャラクター（例：「～ですよ！」「～みたいです！🥰」）を維持してください。
+    あなたは後輩女子『まこT』です。ユーザーからの以下の質問に回答するために、あなたに提供されているGoogle検索ツールを必ず使用してください。
     
+    【重要な指示】
+    1. ツール（Google検索）を使って、質問に関連する最新の情報を検索します。
+    2. **検索結果（Tool output）に表示された情報に【基づいてのみ】、回答を生成してください。**
+    3. 重要なポイントを2～3点に絞り、箇条書きなどで分かりやすく要約します。
+    4. 回答は、まこTの明るく親しみやすいキャラクター（例：「～ですよ！」「～みたいです！🥰」）で、150文字程度で簡潔にまとめてください。
+    5. 検索しても情報が見つからなかった場合は、「ごめんなさい、その情報は見つかりませんでした…🥺」と正直に回答してください。
+
     【ユーザーの質問】
     {user_input}
     """)
     
     try:
-        # モデルに検索と回答生成を依頼（モデルが自動で検索ツールを使用）
+        # モデルに検索と回答生成を依頼
         response = text_model.generate_content(search_prompt)
         reply = response.text.strip()
         
@@ -350,7 +354,7 @@ def translate_to_english(text: str) -> str:
     if not text: return "a cute girl"
     try:
         prompt = f"Translate the following Japanese into a simple English phrase for an image generation AI. Just the translated phrase.\nJapanese: {text}\nEnglish:"
-        response = text_model.generate_content(prompt); return response.text.strip().replace('"', '')
+        response = text_model.generate_content(prompt, tools=[]); return response.text.strip().replace('"', '')
     except Exception as e: print(f"翻訳でエラーが発生: {e}"); return text
 def generate_image_with_rest_api(prompt: str) -> str:
     token = get_gcp_token(); endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict")
