@@ -336,7 +336,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             return _handle_search_chat(question, user_id)
 
     # 2. Q&Aモードの判定
-    qa_keywords = ["社内", "QA ", "/qa "]
+    qa_keywords = ["仕事", "QA ", "/qa "]
     for keyword in qa_keywords:
         if user_input.startswith(keyword):
             question = user_input.replace(keyword, "", 1).strip()
