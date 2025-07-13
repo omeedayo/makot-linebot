@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ3: 会社資料Q&A対応版 - 改善版)
+# app.py (ステップ4: トレンド検索・コマンド対応版)
 # ============================================================
 
 import os
@@ -49,17 +49,19 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
 PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
-# ★★★ モデル名を環境変数から読み込むように変更 ★★★
-TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
+TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-1.5-flash-preview-0514")
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
-# ★★★ 定期実行用エンドポイントの認証キー ★★★
-CRON_SECRET = os.getenv("CRON_SECRET")
+CRON_SECRET               = os.getenv("CRON_SECRET")
 
 
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
+# ★★★ Google検索ツールを有効にしてモデルを初期化 ★★★
+text_model = genai.GenerativeModel(
+    TEXT_MODEL_NAME,
+    tools=[{"google_search": {}}]
+)
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
@@ -263,11 +265,58 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
     summarize_and_store_memory(user_id, history)
     return reply
 
+# ★★★ ここから変更 ★★★
+def _handle_search_chat(user_input: str, user_id: str) -> str:
+    """Web検索を伴う会話モードの処理を担当する"""
+    print(f"[{user_id}] 検索モードで実行します。 検索語: '{user_input}'")
+    
+    search_prompt = textwrap.dedent(f"""
+    あなたは後輩女子『まこT』です。ユーザーから受け取った以下の質問について、Webで最新の情報を検索し、その結果を基に親しみやすく、分かりやすく要約して回答してください。
+    - 重要なポイントを2～3点に絞って、箇条書きなどでまとめてください。
+    - 回答は150文字程度で簡潔にしてください。
+    - まこTの明るいキャラクター（例：「～ですよ！」「～みたいです！🥰」）を維持してください。
+    
+    【ユーザーの質問】
+    {user_input}
+    """)
+    
+    try:
+        response = text_model.generate_content(search_prompt)
+        reply = response.text.strip()
+        
+        reply = post_process(reply, "テンション上がる")
+        reply = re.sub(r'[\*`＊∗]+', '', reply)
+        return reply
+
+    except Exception as e:
+        print(f"検索チャットでエラーが発生: {e}")
+        return "ごめんなさい、検索中にエラーが起きちゃいました…🥺 もう一度試してみてください！"
+
 def chat_with_makot(user_input: str, user_id: str) -> str:
-    """ユーザー入力に応じてQ&Aモードか通常会話モードかを振り分ける"""
-    QA_TRIGGERS = ["教えて", "説明して", "規定", "ルール", "方法", "って何", "とは", "について", "の条件"]
-    is_qa_mode = any(trigger in user_input for trigger in QA_TRIGGERS)
-    return _handle_qa_request(user_input, user_id) if is_qa_mode else _handle_normal_chat(user_input, user_id)
+    """ユーザー入力に応じてQ&A、検索、通常会話のモードを振り分ける"""
+
+    # 1. 検索モードの判定
+    search_keywords = ["調べて", "しらべて", "/search "]
+    for keyword in search_keywords:
+        if user_input.startswith(keyword):
+            question = user_input.replace(keyword, "", 1).strip()
+            if not question:
+                break
+            return _handle_search_chat(question, user_id)
+
+    # 2. Q&Aモードの判定
+    qa_keywords = ["社内", "QA ", "/qa "]
+    for keyword in qa_keywords:
+        if user_input.startswith(keyword):
+            question = user_input.replace(keyword, "", 1).strip()
+            if not question:
+                break
+            return _handle_qa_request(question, user_id)
+
+    # 3. どちらでもなければ通常会話
+    return _handle_normal_chat(user_input, user_id)
+# ★★★ ここまで変更 ★★★
+
 
 # ------------------------------------------------------------
 # ユーティリティ & Webhookハンドラ
@@ -325,7 +374,6 @@ def line_webhook():
     except InvalidSignatureError: return "Invalid signature", 400
     return "OK", 200
 
-# ★★★ ここから変更 ★★★
 @app.route("/push/monday", methods=["GET", "POST"])
 def push_monday_message():
     # Vercel Cron Jobからのリクエストを認証
@@ -388,13 +436,10 @@ def push_friday_message():
             for detail in e.error.details:
                 print(f"  - {detail.property}: {detail.message}")
         return "Failed to send message to LINE", 500
-# ★★★ ここまで変更 ★★★
-
 
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
     user_id = event.source.user_id
-    # ★★★ ユーザーIDをRedisに保存 ★★★
     redis_client.sadd("users", user_id)
     user_text = event.message.text
     if event.source.type in ["group", "room"] and not is_bot_mentioned(user_text): return
@@ -415,7 +460,6 @@ def handle_text_message(event):
 @webhook_handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
     user_id = event.source.user_id
-    # ★★★ ユーザーIDをRedisに保存 ★★★
     redis_client.sadd("users", user_id)
     try:
         message_content = line_bot_api.get_message_content(event.message.id)
@@ -436,7 +480,6 @@ def handle_image_message(event):
 @webhook_handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker_message(event):
     user_id = event.source.user_id
-    # ★★★ ユーザーIDをRedisに保存 ★★★
     redis_client.sadd("users", user_id)
     sticker_map = { "11537": {"52002734": "ありがとうございます！うれしいです🥰", "52002748": "おつかれさまです！🙇‍♀️"}, "11538": {"51626494": "ひえっ…！なにかありましたか！？🥺", "51626501": "ふぁーーーーーーーーーーーｗｗｗｗｗｗｗ"} }
     package_id = event.message.package_id; sticker_id = event.message.sticker_id
