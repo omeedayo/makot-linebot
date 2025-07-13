@@ -53,6 +53,8 @@ PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
 TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
+# ★★★ 定期実行用エンドポイントの認証キー ★★★
+CRON_SECRET = os.getenv("CRON_SECRET")
 
 
 # --- 各種クライアントの初期化 ---
@@ -323,9 +325,75 @@ def line_webhook():
     except InvalidSignatureError: return "Invalid signature", 400
     return "OK", 200
 
+# ★★★ ここから追加 ★★★
+@app.route("/push/monday", methods=["POST"])
+def push_monday_message():
+    # Vercel Cron Jobからのリクエストを認証
+    auth_header = request.headers.get('Authorization')
+    if not CRON_SECRET or auth_header != f"Bearer {CRON_SECRET}":
+        print("Unauthorized cron request")
+        return "Unauthorized", 401
+    
+    try:
+        user_ids = redis_client.smembers("users")
+        if not user_ids:
+            print("送信対象ユーザーがいません。")
+            return "No users to send message to.", 200
+
+        message = TextSendMessage(text="月曜日ですね！今週も頑張っていきましょー！💪")
+        
+        for user_id in user_ids:
+            try:
+                line_bot_api.push_message(user_id, message)
+                time.sleep(0.1) # 短時間に大量送信する際のスロットリング対策
+            except Exception as e:
+                print(f"ユーザーID: {user_id} へのプッシュメッセージ送信に失敗: {e}")
+        
+        print(f"{len(user_ids)} 人のユーザーに月曜日のメッセージを送信しました。")
+        return "OK", 200
+
+    except Exception as e:
+        print(f"月曜日のプッシュメッセージ送信処理でエラー: {e}")
+        return "Internal Server Error", 500
+
+@app.route("/push/friday", methods=["POST"])
+def push_friday_message():
+    # Vercel Cron Jobからのリクエストを認証
+    auth_header = request.headers.get('Authorization')
+    if not CRON_SECRET or auth_header != f"Bearer {CRON_SECRET}":
+        print("Unauthorized cron request")
+        return "Unauthorized", 401
+
+    try:
+        user_ids = redis_client.smembers("users")
+        if not user_ids:
+            print("送信対象ユーザーがいません。")
+            return "No users to send message to.", 200
+
+        message = TextSendMessage(text="金曜日！今週もお疲れ様でした🍻 よい週末を〜🥰")
+
+        for user_id in user_ids:
+            try:
+                line_bot_api.push_message(user_id, message)
+                time.sleep(0.1) # 短時間に大量送信する際のスロットリング対策
+            except Exception as e:
+                print(f"ユーザーID: {user_id} へのプッシュメッセージ送信に失敗: {e}")
+
+        print(f"{len(user_ids)} 人のユーザーに金曜日のメッセージを送信しました。")
+        return "OK", 200
+        
+    except Exception as e:
+        print(f"金曜日のプッシュメッセージ送信処理でエラー: {e}")
+        return "Internal Server Error", 500
+# ★★★ ここまで追加 ★★★
+
+
 @webhook_handler.add(MessageEvent, message=TextMessage)
 def handle_text_message(event):
-    user_id = event.source.user_id; user_text = event.message.text
+    user_id = event.source.user_id
+    # ★★★ ユーザーIDをRedisに保存 ★★★
+    redis_client.sadd("users", user_id)
+    user_text = event.message.text
     if event.source.type in ["group", "room"] and not is_bot_mentioned(user_text): return
     
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
@@ -343,6 +411,9 @@ def handle_text_message(event):
 
 @webhook_handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
+    user_id = event.source.user_id
+    # ★★★ ユーザーIDをRedisに保存 ★★★
+    redis_client.sadd("users", user_id)
     try:
         message_content = line_bot_api.get_message_content(event.message.id)
         image_bytes = message_content.content
@@ -361,6 +432,9 @@ def handle_image_message(event):
 
 @webhook_handler.add(MessageEvent, message=StickerMessage)
 def handle_sticker_message(event):
+    user_id = event.source.user_id
+    # ★★★ ユーザーIDをRedisに保存 ★★★
+    redis_client.sadd("users", user_id)
     sticker_map = { "11537": {"52002734": "ありがとうございます！うれしいです🥰", "52002748": "おつかれさまです！🙇‍♀️"}, "11538": {"51626494": "ひえっ…！なにかありましたか！？🥺", "51626501": "ふぁーーーーーーーーーーーｗｗｗｗｗｗｗ"} }
     package_id = event.message.package_id; sticker_id = event.message.sticker_id
     reply_text = sticker_map.get(str(package_id), {}).get(str(sticker_id))
