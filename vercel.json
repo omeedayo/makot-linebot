@@ -11,5 +11,15 @@
     { "src": "/push/monday", "dest": "app.py" },
     { "src": "/push/friday", "dest": "app.py" },
     { "src": "/(.*)",        "dest": "app.py" }
+  ],
+  "crons": [
+    {
+      "path": "/push/monday",
+      "schedule": "10 13 * * *"  
+    },
+    {
+      "path": "/push/friday",
+      "schedule": "0 12 * * 5"
+    }
   ]
 }
