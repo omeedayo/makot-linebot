@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ4: トレンド検索・コマンド対応版)
+# app.py (ステップ4: トレンド検索・コマンド対応版 - 修正版)
 # ============================================================
 
 import os
@@ -57,11 +57,8 @@ CRON_SECRET               = os.getenv("CRON_SECRET")
 
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
-# ★★★ Google検索ツールを有効にしてモデルを初期化 ★★★
-text_model = genai.GenerativeModel(
-    TEXT_MODEL_NAME,
-    tools=[{"google_search": {}}]
-)
+# ★★★ toolsパラメータを削除し、シンプルな初期化に戻す ★★★
+text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
 line_bot_api    = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 if not REDIS_URL: raise ValueError("REDIS_URL 環境変数が設定されていません。")
@@ -253,7 +250,8 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
     system_prompt = build_system_prompt(context, topic, user_id, long_term_memory)
     
     try:
-        response = text_model.generate_content(system_prompt)
+        # 通常会話ではGoogle検索を使わないように明示的に無効化
+        response = text_model.generate_content(system_prompt, tools=[])
         reply = response.text.strip()
     except Exception as e: reply = f"エラーが発生しました: {e}"
 
@@ -265,7 +263,6 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
     summarize_and_store_memory(user_id, history)
     return reply
 
-# ★★★ ここから変更 ★★★
 def _handle_search_chat(user_input: str, user_id: str) -> str:
     """Web検索を伴う会話モードの処理を担当する"""
     print(f"[{user_id}] 検索モードで実行します。 検索語: '{user_input}'")
@@ -281,6 +278,7 @@ def _handle_search_chat(user_input: str, user_id: str) -> str:
     """)
     
     try:
+        # モデルに検索と回答生成を依頼（モデルが自動で検索ツールを使用）
         response = text_model.generate_content(search_prompt)
         reply = response.text.strip()
         
@@ -315,7 +313,6 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 
     # 3. どちらでもなければ通常会話
     return _handle_normal_chat(user_input, user_id)
-# ★★★ ここまで変更 ★★★
 
 
 # ------------------------------------------------------------
