@@ -7,3 +7,4 @@ redis==5.0.4
 pinecone-client==4.1.1
 python-dotenv
 google-api-python-client
+jpholiday
