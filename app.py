@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ4: トレンド検索・コマンド対応版 - 文字数制限緩和)
+# app.py (ステップ5: 定期メッセージ改善版)
 # ============================================================
 
 import os
@@ -12,6 +12,8 @@ import time
 import textwrap
 import uuid
 from typing import Optional
+import datetime # ★★★ 祝日判定のために追加 ★★★
+import jpholiday # ★★★ 祝日判定のために追加 ★★★
 
 from flask import Flask, request
 from linebot import LineBotApi, WebhookHandler
@@ -314,7 +316,6 @@ def _handle_search_chat(user_input: str, user_id: str) -> str:
         response = text_model.generate_content(summarize_prompt, tools=[])
         reply = response.text.strip()
         
-        # ★★★ 検索モードでは文字数制限をかけない ★★★
         reply = post_process(reply, "テンション上がる", is_search=True)
         reply = re.sub(r'[\*`＊∗]+', '', reply)
         return reply
@@ -361,14 +362,12 @@ def decide_pronoun(user_text: str) -> str:
     return "マコ" if random.random() < 0.10 else "おに" if any(k in user_text for k in MAKOT["emotion_triggers"]["high"]) else "私"
 def inject_pronoun(reply: str, pronoun: str) -> str: return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
-# ★★★ is_search引数を追加 ★★★
 def post_process(reply: str, user_input: str, is_search: bool = False) -> str:
     if any(t in user_input for t in MAKOT["emotion_triggers"]["high"]): reply = apply_expression_style(reply, mood="high")
     elif any(t in user_input for t in MAKOT["emotion_triggers"]["low"]): reply += " 🥺"
     reply = re.sub(r'[\*`＊∗]+', '', reply)
     if any(w in reply for w in UNCERTAIN) and random.random() < 0.4: reply += " しらんけど"
     
-    # ★★★ 検索モードでない場合のみ文字数制限を適用 ★★★
     if not is_search:
         reply_sentences = re.split(r'([。！？])', reply)
         if len(reply_sentences) > 5:
@@ -411,7 +410,6 @@ def line_webhook():
 
 @app.route("/push/monday", methods=["GET", "POST"])
 def push_monday_message():
-    # Vercel Cron Jobからのリクエストを認証
     auth_header = request.headers.get('Authorization')
     if not CRON_SECRET or auth_header != f"Bearer {CRON_SECRET}":
         print("Unauthorized cron request")
@@ -422,7 +420,24 @@ def push_monday_message():
         print("送信対象ユーザーがいません。")
         return "No users to send message to.", 200
 
-    message = TextSendMessage(text="月曜日ですね！今週も頑張っていきましょー！💪")
+    today = datetime.date.today()
+    
+    monday_normal_messages = [
+        "月曜日ですね！今週も頑張っていきましょー！💪",
+        "げつようび…！無理せず、ぼちぼちいきましょ～！🥺",
+        "新しい一週間のはじまりですね！ファイトです！🔥"
+    ]
+    monday_holiday_messages = [
+        "今日はお休みですね！ゆっくりリフレッシュしてくださいね🥰",
+        "祝日ですね！良い一日を～！✨"
+    ]
+    
+    if jpholiday.is_holiday(today):
+        text = random.choice(monday_holiday_messages)
+    else:
+        text = random.choice(monday_normal_messages)
+        
+    message = TextSendMessage(text=text)
     
     try:
         line_bot_api.multicast(list(user_ids), message)
@@ -430,7 +445,6 @@ def push_monday_message():
         return "OK", 200
     except Exception as e:
         print(f"LINEへのマルチキャスト送信でエラーが発生: {e}")
-        # line-bot-sdk v3からエラーの詳細を取得する方法
         if hasattr(e, 'status_code'):
             print(f"Status Code: {e.status_code}")
         if hasattr(e, 'error') and hasattr(e.error, 'message'):
@@ -441,9 +455,9 @@ def push_monday_message():
         return "Failed to send message to LINE", 500
 
 
+# /push/friday を以下の内容で置き換える
 @app.route("/push/friday", methods=["GET", "POST"])
 def push_friday_message():
-    # Vercel Cron Jobからのリクエストを認証
     auth_header = request.headers.get('Authorization')
     if not CRON_SECRET or auth_header != f"Bearer {CRON_SECRET}":
         print("Unauthorized cron request")
@@ -453,8 +467,36 @@ def push_friday_message():
     if not user_ids:
         print("送信対象ユーザーがいません。")
         return "No users to send message to.", 200
+    
+    # --- ★★★ ここからロジックを修正 ★★★ ---
+    today = datetime.date.today()
+    
+    # 金曜日自体が祝日かどうかを判定
+    is_today_holiday = jpholiday.is_holiday(today)
+    
+    # 3日後の月曜日が祝日かどうかを判定
+    monday = today + datetime.timedelta(days=3)
+    is_monday_holiday = jpholiday.is_holiday(monday)
 
-    message = TextSendMessage(text="金曜日！今週もお疲れ様でした🍻 よい週末を〜🥰")
+    # メッセージパターンのリスト
+    friday_normal_messages = [
+        "金曜日！今週もお疲れ様でした🍻 よい週末を〜🥰",
+        "華金ですね！おつかれさまです！🎉",
+        "やっと週末…！今週もよく頑張りましたね！偉いです！🥺"
+    ]
+    friday_holiday_messages = [
+        "明日から連休ですね！ゆっくり羽を伸ばしてください～！✨",
+        "３連休だー！やったー！良い休日を！🥳"
+    ]
+    
+    # 金曜日自体が祝日、または月曜日が祝日の場合 => 連休メッセージ
+    if is_today_holiday or is_monday_holiday:
+        text = random.choice(friday_holiday_messages)
+    else:
+        text = random.choice(friday_normal_messages)
+    # --- ★★★ ここまでロジックを修正 ★★★ ---
+        
+    message = TextSendMessage(text=text)
 
     try:
         line_bot_api.multicast(list(user_ids), message)
@@ -462,7 +504,6 @@ def push_friday_message():
         return "OK", 200
     except Exception as e:
         print(f"LINEへのマルチキャスト送信でエラーが発生: {e}")
-        # line-bot-sdk v3からエラーの詳細を取得する方法
         if hasattr(e, 'status_code'):
             print(f"Status Code: {e.status_code}")
         if hasattr(e, 'error') and hasattr(e.error, 'message'):
