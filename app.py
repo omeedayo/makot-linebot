@@ -133,7 +133,8 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
         要約:""")
     try:
         response = text_model.generate_content(summary_prompt, tools=[])
-        summary = summary_response.text.strip()
+        summary = response.text.strip()
+
 
         if summary and "特になし" not in summary:
             vector = get_embedding(summary)
@@ -569,3 +570,4 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
