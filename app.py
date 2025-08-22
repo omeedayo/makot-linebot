@@ -117,15 +117,11 @@ def recall_short(user_id: str, M: int = 10) -> str:
 
 # ========== 追加：応答生成ヘルパ ==========
 def generate_reply(user_id: str, user_text: str) -> str:
-    """
-    システムプロンプトに短期コンテキストを入れ、
-    ムード・文体を反映し、最終整形まで実施
-    """
     # 1) 文体選択＆ムード更新
     style = choose_style(user_text)
     mood = react_to_context(user_text)
 
-    # 2) 会話の短期要約（ここでは超軽量：直近M件を結合）
+    # 2) 会話の短期要約
     context_summary = recall_short(user_id)
 
     # 3) システムプロンプト生成
@@ -133,30 +129,29 @@ def generate_reply(user_id: str, user_text: str) -> str:
     if context_summary:
         system_prompt += f"\n\n# 会話サマリ\n{context_summary}"
 
-# 4) モデル呼び出し（以前と同じ“文字列1本渡し”に戻す）
-try:
-    single_prompt = f"{system_prompt}\n\n# ユーザー入力\n{user_text}"
-    resp = text_model.generate_content(single_prompt, tools=[])  # ← 文字列1本
-    raw = (resp.text or "").strip()
-except Exception as e:
-    import traceback
-    print(f"gemini error: {e}")
-    traceback.print_exc()
-    raw = "ごめん、ちょっと調子が悪いみたい…別の聞き方でリトライお願い！"
-    
+    # 4) モデル呼び出し（文字列1本渡し）
+    try:
+        single_prompt = f"{system_prompt}\n\n# ユーザー入力\n{user_text}"
+        resp = text_model.generate_content(single_prompt, tools=[])
+        raw = (resp.text or "").strip()
+    except Exception as e:
+        import traceback
+        print(f"gemini error: {e}")
+        traceback.print_exc()
+        raw = "ごめん、ちょっと調子が悪いみたい…別の聞き方でリトライお願い！"
+
     # 5) 仕上げ（口調整形→NGマスク）
     styled = apply_expression_style(raw, mood)
     final = sanitize(styled)
 
-    # 6) 次回用に要約を保存（ここは簡易：ユーザー入力＋要約風）
+    # 6) 要約を保存（短期記憶）
     try:
-        short = user_text[:40].replace("\n", " ")
+        short = (user_text or "").replace("\n", " ")[:40]
         remember_short(user_id, f"U:{short} / B:{final[:60]}")
     except Exception as e:
         print(f"remember_short after reply error: {e}")
 
     return final
-
 
 
 
@@ -670,6 +665,7 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
 
 
