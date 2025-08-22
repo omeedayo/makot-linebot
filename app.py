@@ -32,8 +32,14 @@ import redis
 import pinecone
 from dotenv import load_dotenv
 
-# --- 他のPythonファイルからインポート ---
-from character_makot import MAKOT, build_system_prompt, apply_expression_style
+# --- 他のPythonファイルからインポート（置き換え） ---
+from character_makot import (
+    build_system_prompt,
+    apply_expression_style,
+    react_to_context,
+    choose_style,
+    TABOO
+)
 
 # ------------------------------------------------------------
 # 初期化処理
@@ -570,4 +576,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
