@@ -38,8 +38,11 @@ from character_makot import (
     apply_expression_style,
     react_to_context,
     choose_style,
-    TABOO
+    TABOO,
+    BASE_PROFILE,        # 追加
+    EMOTION_TRIGGERS,    # 追加
 )
+
 
 # ------------------------------------------------------------
 # 初期化処理
@@ -79,6 +82,87 @@ if not PINECONE_API_KEY or not PINECONE_INDEX_NAME:
     raise ValueError("Pineconeの環境変数(API_KEY, INDEX_NAME)が設定されていません。")
 pc = pinecone.Pinecone(api_key=PINECONE_API_KEY)
 pinecone_index = pc.Index(PINECONE_INDEX_NAME)
+
+
+
+# ========== 追加：発話前フィルタ ==========
+def sanitize(text: str):
+    """ハードNGはマスク、空白はそのまま"""
+    if not text:
+        return text
+    out = text
+    for w in TABOO["hard"]:
+        if w in out:
+            out = out.replace(w, "※（自主規制）")
+    return out
+
+# ========== 追加：短期メモリ（Redis） ==========
+def remember_short(user_id: str, turn_summary: str, N: int = 20):
+    key = f"chat:{user_id}:summaries"
+    try:
+        redis_client.lpush(key, turn_summary)
+        redis_client.ltrim(key, 0, N - 1)
+    except Exception as e:
+        print(f"remember_short error: {e}")
+
+def recall_short(user_id: str, M: int = 10) -> str:
+    key = f"chat:{user_id}:summaries"
+    try:
+        items = redis_client.lrange(key, 0, M - 1)
+        items = list(reversed(items))
+        return " / ".join(items)
+    except Exception as e:
+        print(f"recall_short error: {e}")
+        return ""
+
+# ========== 追加：応答生成ヘルパ ==========
+def generate_reply(user_id: str, user_text: str) -> str:
+    """
+    システムプロンプトに短期コンテキストを入れ、
+    ムード・文体を反映し、最終整形まで実施
+    """
+    # 1) 文体選択＆ムード更新
+    style = choose_style(user_text)
+    mood = react_to_context(user_text)
+
+    # 2) 会話の短期要約（ここでは超軽量：直近M件を結合）
+    context_summary = recall_short(user_id)
+
+    # 3) システムプロンプト生成
+    system_prompt = build_system_prompt(style=style)
+    if context_summary:
+        system_prompt += f"\n\n# 会話サマリ\n{context_summary}"
+
+    # 4) モデル呼び出し（Gemini）
+    try:
+        resp = text_model.generate_content(
+            [
+                {"role": "system", "parts": [system_prompt]},
+                {"role": "user", "parts": [user_text]},
+            ],
+            safety_settings=None,  # 必要に応じて設定
+        )
+        raw = (resp.text or "").strip()
+    except Exception as e:
+        print(f"gemini error: {e}")
+        raw = "ごめん、ちょっと調子が悪いみたい…別の聞き方でリトライお願い！"
+
+    # 5) 仕上げ（口調整形→NGマスク）
+    styled = apply_expression_style(raw, mood)
+    final = sanitize(styled)
+
+    # 6) 次回用に要約を保存（ここは簡易：ユーザー入力＋要約風）
+    try:
+        short = user_text[:40].replace("\n", " ")
+        remember_short(user_id, f"U:{short} / B:{final[:60]}")
+    except Exception as e:
+        print(f"remember_short after reply error: {e}")
+
+    return final
+
+
+
+
 
 
 # ------------------------------------------------------------
@@ -359,7 +443,10 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
 # ------------------------------------------------------------
 # ユーティリティ & Webhookハンドラ
 # ------------------------------------------------------------
-def is_bot_mentioned(text: str) -> bool: return any(nick in text for nick in [MAKOT["name"]] + MAKOT["nicknames"])
+def is_bot_mentioned(text: str) -> bool:
+    names = [BASE_PROFILE["name"]] + BASE_PROFILE["nicknames"]
+    return any(n in (text or "") for n in names)
+
 def guess_topic(text: str):
     hobby_keys = ["趣味", "休日", "ハマって", "コストコ", "ポケポケ"]; work_keys  = ["仕事", "業務", "残業", "請求書", "統計"]
     if any(k in text for k in hobby_keys): return "hobby"
@@ -370,17 +457,26 @@ def decide_pronoun(user_text: str) -> str:
 def inject_pronoun(reply: str, pronoun: str) -> str: return re.sub(r"^(私|おに|マコ)", pronoun, reply, count=1)
 UNCERTAIN = ["かも", "かもしれ", "たぶん", "多分", "かな", "と思う", "気がする"]
 def post_process(reply: str, user_input: str, is_search: bool = False) -> str:
-    if any(t in user_input for t in MAKOT["emotion_triggers"]["high"]): reply = apply_expression_style(reply, mood="high")
-    elif any(t in user_input for t in MAKOT["emotion_triggers"]["low"]): reply += " 🥺"
+    # ムード反映（口調整形）
+    ui = (user_input or "")
+    if any(t in ui for t in EMOTION_TRIGGERS["high"]):
+        reply = apply_expression_style(reply, mood="excited")
+    elif any(t in ui for t in EMOTION_TRIGGERS["low"]):
+        reply = apply_expression_style(reply, mood="tired")
+
+    # 記号クリーニング
     reply = re.sub(r'[\*`＊∗]+', '', reply)
-    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4: reply += " しらんけど"
-    
+
+    # 断定ぼかしが多い時は一言だけ足す（任意）
+    if any(w in reply for w in UNCERTAIN) and random.random() < 0.4:
+        reply += " しらんけど"
+
+    # 検索モード以外は“1〜2文”に収める
     if not is_search:
-        reply_sentences = re.split(r'([。！？])', reply)
-        if len(reply_sentences) > 5:
-            processed_reply = "".join(reply_sentences[:4])
-            reply = processed_reply
-            
+        reply = re.sub(r'\s+', ' ', reply).strip()
+        parts = re.split(r'(?<=[。！？\?])\s*', reply)
+        reply = " ".join([p for p in parts if p][:2])
+
     return reply
 def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
     if not client_id: raise Exception("Imgur Client IDが設定されていません。")
@@ -537,8 +633,9 @@ def handle_text_message(event):
             print(f"画像生成でエラーが発生: {e}")
             line_bot_api.push_message(user_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪いみたいです…\n理由: {e}"))
         return
-    reply_text = chat_with_makot(user_text, user_id=user_id)
+    reply_text = generate_reply(user_id, user_text)             # ← 新ルートに切替
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
+
 
 @webhook_handler.add(MessageEvent, message=ImageMessage)
 def handle_image_message(event):
@@ -576,5 +673,6 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
 
