@@ -133,20 +133,17 @@ def generate_reply(user_id: str, user_text: str) -> str:
     if context_summary:
         system_prompt += f"\n\n# 会話サマリ\n{context_summary}"
 
-    # 4) モデル呼び出し（Gemini）
-    try:
-        resp = text_model.generate_content(
-            [
-                {"role": "system", "parts": [system_prompt]},
-                {"role": "user", "parts": [user_text]},
-            ],
-            safety_settings=None,  # 必要に応じて設定
-        )
-        raw = (resp.text or "").strip()
-    except Exception as e:
-        print(f"gemini error: {e}")
-        raw = "ごめん、ちょっと調子が悪いみたい…別の聞き方でリトライお願い！"
-
+# 4) モデル呼び出し（以前と同じ“文字列1本渡し”に戻す）
+try:
+    single_prompt = f"{system_prompt}\n\n# ユーザー入力\n{user_text}"
+    resp = text_model.generate_content(single_prompt, tools=[])  # ← 文字列1本
+    raw = (resp.text or "").strip()
+except Exception as e:
+    import traceback
+    print(f"gemini error: {e}")
+    traceback.print_exc()
+    raw = "ごめん、ちょっと調子が悪いみたい…別の聞き方でリトライお願い！"
+    
     # 5) 仕上げ（口調整形→NGマスク）
     styled = apply_expression_style(raw, mood)
     final = sanitize(styled)
@@ -673,6 +670,7 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
 
 
