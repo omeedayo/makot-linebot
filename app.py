@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ5: 定期メッセージ改善版)
+# app.py (ステップ5: 定期メッセージ改善版 + 画像生成ルートB(nano-banana)対応)
 # ============================================================
 
 import os
@@ -58,6 +58,10 @@ RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 CRON_SECRET               = os.getenv("CRON_SECRET")
 GOOGLE_SEARCH_API_KEY = os.getenv("GOOGLE_SEARCH_API_KEY")
 SEARCH_ENGINE_ID      = os.getenv("SEARCH_ENGINE_ID")
+
+# ★★★ 画像生成モデル（Gemini API側） ★★★
+# Vercel環境変数に IMAGE_MODEL_NAME を入れれば切替できる
+IMAGE_MODEL_NAME = os.getenv("IMAGE_MODEL_NAME", "nano-banana-pro-preview")
 
 
 # --- 各種クライアントの初期化 ---
@@ -135,7 +139,6 @@ def summarize_and_store_memory(user_id: str, history: list[str]):
         response = text_model.generate_content(summary_prompt, tools=[])
         summary = response.text.strip()
 
-
         if summary and "特になし" not in summary:
             vector = get_embedding(summary)
             if not vector: return
@@ -179,7 +182,7 @@ def expand_query(question: str) -> list[str]:
     try:
         response = text_model.generate_content(prompt, tools=[])
         queries = [line.strip().lstrip('- ') for line in response.text.strip().split('\n') if line.strip()]
-        return list(set(queries)) # 重複を削除
+        return list(set(queries))
     except Exception as e:
         print(f"クエリ拡張エラー: {e}")
         return [question]
@@ -205,7 +208,7 @@ def _handle_qa_request(user_input: str, user_id: str) -> str:
 
         sorted_matches = sorted(all_matches.values(), key=lambda x: x.score, reverse=True)
         context_chunks, sources = [], set()
-        
+
         print("\n--- 統合後の検索結果 ---")
         for match in sorted_matches[:5]:
             print(f"  [検索結果] Score: {match.score:.4f}, Source: {match.metadata['source']}, Chapter: {match.metadata.get('chapter', 'N/A')}")
@@ -220,7 +223,7 @@ def _handle_qa_request(user_input: str, user_id: str) -> str:
         prompt = QA_SYSTEM_PROMPT.format(context=context_str, question=user_input)
         response = text_model.generate_content(prompt, tools=[])
         reply = response.text.strip()
-        
+
         if "ごめんなさい" not in reply and "参考:" not in reply: reply += f" {source_str}"
         reply = re.sub(r'[\*`＊∗]+', '', reply)
         return reply
@@ -253,9 +256,8 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
     context = "\n".join(history[-12:])
     topic = guess_topic(user_input)
     system_prompt = build_system_prompt(context, topic, user_id, long_term_memory)
-    
+
     try:
-        # 通常会話ではGoogle検索を使わないように明示的に無効化
         response = text_model.generate_content(system_prompt, tools=[])
         reply = response.text.strip()
     except Exception as e: reply = f"エラーが発生しました: {e}"
@@ -276,47 +278,43 @@ def _handle_search_chat(user_input: str, user_id: str) -> str:
         return "ごめんなさい、検索機能が設定されていないみたいです…🥺"
 
     try:
-        # ステップ1: Google Custom Search APIで検索を実行
         print("  [ステップ1] Google Custom Search APIで検索を実行します...")
         search_service = build("customsearch", "v1", developerKey=GOOGLE_SEARCH_API_KEY)
         result = search_service.cse().list(q=user_input, cx=SEARCH_ENGINE_ID, num=5).execute()
-        
-        # 検索結果を整形
+
         if 'items' not in result or not result['items']:
             return "うーん、関連する情報が見つかりませんでした…！ごめんなさい🥺"
-            
+
         context_chunks = []
         for i, item in enumerate(result['items']):
             title = item.get('title', 'No Title')
             snippet = item.get('snippet', 'No Snippet').replace('\n', '')
             link = item.get('link', '')
             context_chunks.append(f"【検索結果{i+1}】\nタイトル: {title}\n要約: {snippet}\nURL: {link}")
-        
+
         search_context = "\n\n".join(context_chunks)
         print(f"  [ステップ1完了] 検索コンテキストを生成しました。")
 
-        # ステップ2: 検索結果を基に要約を生成
         print("  [ステップ2] 要約を生成します...")
         summarize_prompt = textwrap.dedent(f"""
         あなたは後輩女子『まこT』です。提供された以下の【Web検索結果】を基に、ユーザーの質問に親しみやすく、分かりやすく要約して回答してください。
-        
+
         【重要な指示】
-        - **【Web検索結果】に書かれている情報だけを使ってください。**
+        - 【Web検索結果】に書かれている情報だけを使ってください。
         - 重要なポイントを2～3点に絞って、箇条書きなどで分かりやすく要約します。
-        - 回答は、まこTの明るく親しみやすいキャラクター（例：「～ですよ！」「～みたいです！🥰」）で、150文字程度で簡潔にまとめてください。
-        - 検索結果が乏しい場合は、無理にまとめず「〇〇については、こんな情報がありました！」のように、見つかった情報を素直に伝える形で回答してください。
+        - 回答は、まこTの明るく親しみやすいキャラクターで、150文字程度で簡潔にまとめてください。
+        - 検索結果が乏しい場合は、無理にまとめず見つかった情報を素直に伝える形で回答してください。
 
         【Web検索結果】
         {search_context}
-        
+
         【元のユーザーの質問】
         {user_input}
         """)
 
-        # 要約生成ではツールは不要
         response = text_model.generate_content(summarize_prompt, tools=[])
         reply = response.text.strip()
-        
+
         reply = post_process(reply, "テンション上がる", is_search=True)
         reply = re.sub(r'[\*`＊∗]+', '', reply)
         return reply
@@ -347,7 +345,7 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
             return _handle_qa_request(question, user_id)
 
     # 3. どちらでもなければ通常会話
-    return _handle_normal_chat(user_input, user_id)
+    return _handle_normal_chat(user_input, user_id=user_id)
 
 
 # ------------------------------------------------------------
@@ -368,14 +366,15 @@ def post_process(reply: str, user_input: str, is_search: bool = False) -> str:
     elif any(t in user_input for t in MAKOT["emotion_triggers"]["low"]): reply += " 🥺"
     reply = re.sub(r'[\*`＊∗]+', '', reply)
     if any(w in reply for w in UNCERTAIN) and random.random() < 0.4: reply += " しらんけど"
-    
+
     if not is_search:
         reply_sentences = re.split(r'([。！？])', reply)
         if len(reply_sentences) > 5:
             processed_reply = "".join(reply_sentences[:4])
             reply = processed_reply
-            
+
     return reply
+
 def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
     if not client_id: raise Exception("Imgur Client IDが設定されていません。")
     url = "https://api.imgur.com/3/image"; headers = {"Authorization": f"Client-ID {client_id}"}
@@ -384,12 +383,74 @@ def upload_to_imgur(image_bytes: bytes, client_id: str) -> str:
         if data.get("success"): return data["data"]["link"]
         else: raise Exception(f"Imgurへのアップロードに失敗しました: {data.get('data', {}).get('error', 'Unknown error')}")
     except requests.exceptions.RequestException as e: raise Exception(f"Imgur APIへのリクエストに失敗しました: {e}")
+
 def translate_to_english(text: str) -> str:
     if not text: return "a cute girl"
     try:
         prompt = f"Translate the following Japanese into a simple English phrase for an image generation AI. Just the translated phrase.\nJapanese: {text}\nEnglish:"
         response = text_model.generate_content(prompt, tools=[]); return response.text.strip().replace('"', '')
     except Exception as e: print(f"翻訳でエラーが発生: {e}"); return text
+
+# ------------------------------------------------------------
+# 画像生成（ルートB: Gemini API / nano-banana）
+# ------------------------------------------------------------
+def generate_image_with_gemini_api(prompt: str) -> str:
+    if not GEMINI_API_KEY:
+        raise Exception("GEMINI_API_KEY が設定されていません。")
+
+    trigger_words = ["画像", "イラスト", "描いて", "絵を"]
+    clean_prompt = re.sub("|".join(trigger_words), "", prompt).strip()
+    if not clean_prompt:
+        clean_prompt = "a cute cat"
+
+    # 日本語→英語は任意。やると安定しやすいので残す
+    english_prompt = translate_to_english(clean_prompt)
+
+    # ざっくりスタイル付け（必要なら好みに合わせて調整）
+    final_prompt = f"anime style illustration, masterpiece, best quality, {english_prompt}"
+
+    url = f"https://generativelanguage.googleapis.com/v1beta/models/{IMAGE_MODEL_NAME}:generateContent"
+    headers = {
+        "x-goog-api-key": GEMINI_API_KEY,
+        "Content-Type": "application/json",
+    }
+
+    payload = {
+        "contents": [{
+            "parts": [{"text": final_prompt}]
+        }],
+        "generationConfig": {
+            "responseModalities": ["Image"],
+            "imageConfig": {
+                "aspectRatio": "1:1",
+                "imageSize": "1K"
+            }
+        }
+    }
+
+    resp = requests.post(url, headers=headers, json=payload, timeout=90)
+    resp.raise_for_status()
+    data = resp.json()
+
+    try:
+        parts = data["candidates"][0]["content"]["parts"]
+    except Exception:
+        raise Exception(f"画像レスポンスの形式が想定外です: {data}")
+
+    b64 = None
+    for p in parts:
+        if "inlineData" in p and isinstance(p["inlineData"], dict):
+            b64 = p["inlineData"].get("data")
+            if b64:
+                break
+
+    if not b64:
+        raise Exception(f"画像データが返ってきませんでした: {data}")
+
+    image_bytes = base64.b64decode(b64)
+    return upload_to_imgur(image_bytes, IMGUR_CLIENT_ID)
+
+# 旧: Vertex画像生成（いまは使わないが残しておく）
 def generate_image_with_rest_api(prompt: str) -> str:
     token = get_gcp_token(); endpoint_url = (f"https://{GCP_LOCATION}-aiplatform.googleapis.com/v1/projects/{GCP_PROJECT_ID}/locations/{GCP_LOCATION}/publishers/google/models/imagegeneration@006:predict")
     headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json; charset=utf-8"}
@@ -415,14 +476,14 @@ def push_monday_message():
     if not CRON_SECRET or auth_header != f"Bearer {CRON_SECRET}":
         print("Unauthorized cron request")
         return "Unauthorized", 401
-    
+
     user_ids = redis_client.smembers("users")
     if not user_ids:
         print("送信対象ユーザーがいません。")
         return "No users to send message to.", 200
 
     today = datetime.date.today()
-    
+
     monday_normal_messages = [
         "月曜日ですね！今週も頑張っていきましょー！💪",
         "げつようび…！無理せず、ぼちぼちいきましょ～！🥺",
@@ -432,31 +493,23 @@ def push_monday_message():
         "今日はお休みですね！ゆっくりリフレッシュしてくださいね🥰",
         "祝日ですね！良い一日を～！✨"
     ]
-    
+
     if jpholiday.is_holiday(today):
         text = random.choice(monday_holiday_messages)
     else:
         text = random.choice(monday_normal_messages)
-        
+
     message = TextSendMessage(text=text)
-    
+
     try:
         line_bot_api.multicast(list(user_ids), message)
         print(f"{len(user_ids)} 人のユーザーに月曜日のメッセージを送信しました。")
         return "OK", 200
     except Exception as e:
         print(f"LINEへのマルチキャスト送信でエラーが発生: {e}")
-        if hasattr(e, 'status_code'):
-            print(f"Status Code: {e.status_code}")
-        if hasattr(e, 'error') and hasattr(e.error, 'message'):
-            print(f"Error Message: {e.error.message}")
-        if hasattr(e, 'error') and hasattr(e.error, 'details'):
-            for detail in e.error.details:
-                print(f"  - {detail.property}: {detail.message}")
         return "Failed to send message to LINE", 500
 
 
-# /push/friday を以下の内容で置き換える
 @app.route("/push/friday", methods=["GET", "POST"])
 def push_friday_message():
     auth_header = request.headers.get('Authorization')
@@ -468,18 +521,14 @@ def push_friday_message():
     if not user_ids:
         print("送信対象ユーザーがいません。")
         return "No users to send message to.", 200
-    
-    # --- ★★★ ここからロジックを修正 ★★★ ---
+
     today = datetime.date.today()
-    
-    # 金曜日自体が祝日かどうかを判定
+
     is_today_holiday = jpholiday.is_holiday(today)
-    
-    # 3日後の月曜日が祝日かどうかを判定
+
     monday = today + datetime.timedelta(days=3)
     is_monday_holiday = jpholiday.is_holiday(monday)
 
-    # メッセージパターンのリスト
     friday_normal_messages = [
         "金曜日！今週もお疲れ様でした🍻 よい週末を〜🥰",
         "華金ですね！おつかれさまです！🎉",
@@ -489,14 +538,12 @@ def push_friday_message():
         "明日から連休ですね！ゆっくり羽を伸ばしてください～！✨",
         "３連休だー！やったー！良い休日を！🥳"
     ]
-    
-    # 金曜日自体が祝日、または月曜日が祝日の場合 => 連休メッセージ
+
     if is_today_holiday or is_monday_holiday:
         text = random.choice(friday_holiday_messages)
     else:
         text = random.choice(friday_normal_messages)
-    # --- ★★★ ここまでロジックを修正 ★★★ ---
-        
+
     message = TextSendMessage(text=text)
 
     try:
@@ -505,13 +552,6 @@ def push_friday_message():
         return "OK", 200
     except Exception as e:
         print(f"LINEへのマルチキャスト送信でエラーが発生: {e}")
-        if hasattr(e, 'status_code'):
-            print(f"Status Code: {e.status_code}")
-        if hasattr(e, 'error') and hasattr(e.error, 'message'):
-            print(f"Error Message: {e.error.message}")
-        if hasattr(e, 'error') and hasattr(e.error, 'details'):
-            for detail in e.error.details:
-                print(f"  - {detail.property}: {detail.message}")
         return "Failed to send message to LINE", 500
 
 @webhook_handler.add(MessageEvent, message=TextMessage)
@@ -520,17 +560,19 @@ def handle_text_message(event):
     redis_client.sadd("users", user_id)
     user_text = event.message.text
     if event.source.type in ["group", "room"] and not is_bot_mentioned(user_text): return
-    
+
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
             line_bot_api.reply_message(event.reply_token, TextSendMessage(text="おっけーです！ちょっと待っててくださいね…🥰"))
-            img_url = generate_image_with_rest_api(user_text)
+            # ★★★ ここがルートB（Gemini画像生成） ★★★
+            img_url = generate_image_with_gemini_api(user_text)
             msg = ImageSendMessage(original_content_url=img_url, preview_image_url=img_url)
             line_bot_api.push_message(user_id, msg)
         except Exception as e:
             print(f"画像生成でエラーが発生: {e}")
             line_bot_api.push_message(user_id, TextSendMessage(text=f"ごめんなさい、画像生成の調子が悪いみたいです…\n理由: {e}"))
         return
+
     reply_text = chat_with_makot(user_text, user_id=user_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
@@ -570,5 +612,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
-
