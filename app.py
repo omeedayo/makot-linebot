@@ -52,7 +52,7 @@ GCP_CREDENTIALS_JSON_STR  = os.getenv("GCP_CREDENTIALS_JSON")
 REDIS_URL                 = os.getenv("REDIS_URL")
 PINECONE_API_KEY          = os.getenv("PINECONE_API_KEY")
 PINECONE_INDEX_NAME       = os.getenv("PINECONE_INDEX_NAME")
-TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-2.5-flash-preview-05-20")
+TEXT_MODEL_NAME           = os.getenv("TEXT_MODEL_NAME", "gemini-3-pro-preview")
 VERTEX_EMBEDDING_MODEL    = os.getenv("VERTEX_EMBEDDING_MODEL", "text-multilingual-embedding-002")
 RAG_SCORE_THRESHOLD       = float(os.getenv("RAG_SCORE_THRESHOLD", 0.55))
 CRON_SECRET               = os.getenv("CRON_SECRET")
@@ -570,4 +570,5 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
+
 
