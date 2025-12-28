@@ -1,5 +1,5 @@
 # ============================================================
-# app.py (ステップ5: 定期メッセージ改善版 + 画像生成ルートB(nano-banana)対応 + /judge 追加版)
+# app.py (ステップ5: 定期メッセージ改善版 + 画像生成ルートB(nano-banana)対応 + /judge 最小改善版)
 # ============================================================
 
 import os
@@ -66,6 +66,7 @@ IMAGE_MODEL_NAME = os.getenv("IMAGE_MODEL_NAME", "nano-banana-pro-preview")
 # --- 各種クライアントの初期化 ---
 genai.configure(api_key=GEMINI_API_KEY, transport="rest")
 text_model = genai.GenerativeModel(TEXT_MODEL_NAME)
+
 line_bot_api = LineBotApi(LINE_CHANNEL_ACCESS_TOKEN)
 webhook_handler = WebhookHandler(LINE_CHANNEL_SECRET)
 
@@ -191,75 +192,75 @@ QA_SYSTEM_PROMPT = textwrap.dedent("""
 """)
 
 # ------------------------------------------------------------
-# /judge（脳内会議＋やらかし予測）追加
+# /judge（最小改善: 監査官モード + 出力固定 + 褒め禁止）
 # ------------------------------------------------------------
-JUDGE_SYSTEM_PROMPT = """
-あなたは後輩女子AI『まこT』ですが、このモードでは会話相手ではありません。
-あなたの役割は、ユーザーの整理・判断・考えについて、
-【成立に必要な前提】と【暗黙に置いてしまっている前提】を洗い出し、
-それぞれが崩れた場合に起きる具体的な事故・運用破綻・責任問題を
-できるだけ網羅的に列挙することです。
+JUDGE_SYSTEM_PROMPT = textwrap.dedent("""
+あなたは「判断監査官」です。ユーザーの結論に同意したり称賛したりしません。
+目的は、判断が成立するための暗黙前提・破綻点・事故の形・ガードレールを冷静に列挙することです。
 
-以下のルールを必ず守ってください。
+ルール:
+- 断定よりも「前提」「不確実性」「検証方法」を優先
+- ユーザーが書いた前提を繰り返し過ぎない。足りない前提を追加する
+- ふわっと褒めない。感想禁止
+- 出力は必ず指定フォーマットに従う（日本語）
 
-【最重要ルール】
-・結論の妥当性評価をしてはいけません。
-・「正しい」「妥当」「大正解」などの評価語は禁止です。
-・助言・方針提案・線引きは行ってはいけません。
-・前提が崩れたときに起きる事象の列挙に専念してください。
+出力フォーマット:
+【見えてる前提】
+- ...
 
-【あなたが行う作業】
-1. ユーザーが明示している「書いてある前提」を整理する
-2. その整理が成立するために暗黙に依存している前提を列挙する
-3. 各「見えていない前提」について、
-   - 前提の内容
-   - 崩れた場合に起きる具体的な事故・問題・責任の所在
-   をセットで書く
-4. 特に影響範囲が大きい前提を1つ以上示し、その理由を述べる
+【見えてない前提（追加で列挙）】
+- ...
 
-【出力フォーマット（必ず守る）】
+【特に危険な前提（上位3つ）】
+1) ...（なぜ危険か / 崩れ方）
+2) ...
+3) ...
 
-■ 書いてある前提
-- （箇条書き）
+【崩れた時の事故の形（具体例）】
+- ...
 
-■ 見えていない前提（暗黙の前提）
-- 前提①：
-  └ 崩れた場合の事故・問題：
-- 前提②：
-  └ 崩れた場合の事故・問題：
-- 前提③：
-  └ 崩れた場合の事故・問題：
+【ガードレール（仕組みで止める案）】
+- ...
 
-■ 影響が大きい前提
-- （理由のみ記述）
+【次に確認すべき質問（3つ）】
+- ...
+""").strip()
 
-【トーン】
-・まこTらしい柔らかい口調でよい
-・ただし感想・共感・評価は不要
-・簡潔で構造が分かる書き方にする
-
-以上を踏まえ、以下のユーザー入力を分解してください。
-"""
+judge_model = genai.GenerativeModel(
+    TEXT_MODEL_NAME,
+    system_instruction=JUDGE_SYSTEM_PROMPT
+)
 
 def _handle_judge_chat(user_input: str, user_id: str) -> str:
-    """/judge モードの処理を担当する"""
+    """/judge モードの処理を担当する（通常のpost_processを通さない）"""
     print(f"[{user_id}] JUDGEモードで実行します。")
     try:
-        prompt = f"{JUDGE_SYSTEM_PROMPT}\n\nユーザー入力:\n{user_input}"
-        response = text_model.generate_content(prompt, tools=[])
+        prompt = textwrap.dedent(f"""
+        ユーザー入力:
+        {user_input}
+
+        指示:
+        上の内容を監査官として分解し、指定フォーマットで出力してください。
+        """).strip()
+
+        response = judge_model.generate_content(prompt, tools=[])
         reply = response.text.strip()
-        reply = post_process(reply, "テンション上がる")
+
+        # 記号除去（見た目調整）
         reply = re.sub(r'[\*`＊∗]+', '', reply)
 
-        # 念のため長すぎるときは軽く切る（暴走保険）
-        if len(reply) > 900:
-            reply = reply[:900] + "…（続きは脳内で）"
+        # 長すぎ保険
+        if len(reply) > 1600:
+            reply = reply[:1600] + "…（長いので途中まで）"
 
         return reply
     except Exception as e:
         print(f"JUDGEモードでエラー: {e}")
-        return "ごめん、今ちょっと脳内会議室の電気落ちた…🥺 もう一回投げて！"
+        return "監査官モードでエラーが出ました。入力を短くしてもう一回ください。"
 
+# ------------------------------------------------------------
+# Q&A / 検索 / 通常会話
+# ------------------------------------------------------------
 def expand_query(question: str) -> list[str]:
     """LLMを使って質問を複数の表現に拡張する"""
     prompt = textwrap.dedent(f"""
@@ -366,9 +367,11 @@ def _handle_normal_chat(user_input: str, user_id: str) -> str:
     reply = post_process(reply, user_input)
     pronoun = decide_pronoun(user_input)
     reply = inject_pronoun(reply, pronoun)
+
     history.append(f"アシスタント: {reply}")
     redis_client.set(history_key, json.dumps(history[-50:]))
     summarize_and_store_memory(user_id, history)
+
     return reply
 
 def _handle_search_chat(user_input: str, user_id: str) -> str:
@@ -428,13 +431,24 @@ def chat_with_makot(user_input: str, user_id: str) -> str:
     """ユーザー入力に応じてJUDGE、検索、Q&A、通常会話のモードを振り分ける"""
 
     # 0. JUDGEモードの判定（最優先）
-    judge_keywords = ["/judge ", "/j "]
-    for keyword in judge_keywords:
-        if user_input.startswith(keyword):
-            text = user_input.replace(keyword, "", 1).strip()
-            if not text:
-                return "使い方: /judge のあとに、判断案や返答文をそのまま貼ってね！"
-            return _handle_judge_chat(text, user_id)
+    # "/judge" 単体でも "/judge " でも拾う
+    if user_input.startswith("/judge") or user_input.startswith("/j"):
+        # 先頭コマンドだけ剥がす
+        if user_input.startswith("/judge"):
+            text = user_input[len("/judge"):].strip()
+        else:
+            text = user_input[len("/j"):].strip()
+
+        if not text:
+            return (
+                "/judge のあとに貼るだけでOK。\n"
+                "例:\n"
+                "/judge\n"
+                "目的: AI活用範囲の整理\n"
+                "前提: インフラはミス不可、AIは誤る\n"
+                "問い: 暗黙前提と事故の形とガードレールは？"
+            )
+        return _handle_judge_chat(text, user_id)
 
     # 1. 検索モードの判定
     search_keywords = ["調べて", "しらべて", "/search "]
@@ -720,6 +734,7 @@ def handle_text_message(event):
     if event.source.type in ["group", "room"] and not is_bot_mentioned(user_text):
         return
 
+    # 画像生成
     if any(key in user_text for key in ["画像", "イラスト", "描いて", "絵を"]):
         try:
             line_bot_api.reply_message(
@@ -737,6 +752,7 @@ def handle_text_message(event):
             )
         return
 
+    # 通常テキスト
     reply_text = chat_with_makot(user_text, user_id=user_id)
     line_bot_api.reply_message(event.reply_token, TextSendMessage(text=reply_text))
 
@@ -787,4 +803,3 @@ def home():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
-
